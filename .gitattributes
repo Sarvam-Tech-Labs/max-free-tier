@@ -1,0 +1,6 @@
+# Upstream tools (uptime/, usage/) and their formatters expect LF. Keep LF on every OS.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
