@@ -1,0 +1,8 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+# The Deploy to Cloudflare button reads this file to ask for the two required secrets.
+# 32-hex account id from your dashboard URL
+CF_ACCOUNT_ID=
+# API token with Account Analytics: Read only
+CF_API_TOKEN=
+# Optional webhooks are not listed here on purpose; add them after deploy:
+#   wrangler secret put DISCORD_WEBHOOK_URL   (or SLACK_WEBHOOK_URL)

@@ -1,0 +1,5 @@
+# pnpm >=10 blocks dependency postinstall scripts by default; allow the ones this repo needs.
+allowBuilds:
+  esbuild: true
+  workerd: true
+  "@biomejs/biome": true
