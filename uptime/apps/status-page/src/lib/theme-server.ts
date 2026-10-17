@@ -1,0 +1,44 @@
+import { createServerFn } from '@tanstack/react-start';
+import { getCookie, setCookie } from '@tanstack/react-start/server';
+import { ONE_YEAR_SECONDS, COOKIE_NAMES } from './constants';
+
+export type ThemePreference = 'light' | 'dark' | 'system';
+
+function isThemePreference(value: unknown): value is ThemePreference {
+  return value === 'light' || value === 'dark' || value === 'system';
+}
+
+export const getThemePreferenceServerFn = createServerFn({
+  method: 'GET',
+}).handler(async () => {
+  const cookieValue = getCookie(COOKIE_NAMES.THEME);
+  return isThemePreference(cookieValue) ? cookieValue : 'system';
+});
+
+export const setThemePreferenceServerFn = createServerFn({ method: 'POST' })
+  .validator((data: unknown): ThemePreference => {
+    if (!isThemePreference(data)) {
+      throw new Error('Invalid theme preference');
+    }
+    return data;
+  })
+  .handler(async ({ data }) => {
+    setCookie(COOKIE_NAMES.THEME, data, {
+      maxAge: ONE_YEAR_SECONDS,
+      path: '/',
+      sameSite: 'lax',
+    });
+  });
+
+declare global {
+  interface Window {
+    /** Installed by {@link getThemeInitScript}; absent until that inline script has run. */
+    __flarewatchSetThemePreference?: (theme: ThemePreference) => void;
+  }
+}
+
+export function getThemeInitScript(theme: ThemePreference): string {
+  const initialTheme = JSON.stringify(theme);
+
+  return `(function(){try{var r=document.documentElement;var m=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)');var c=${initialTheme};function a(p){c=p;r.dataset.theme=p;if(p==='dark'){r.classList.add('dark');r.style.colorScheme='dark';return}if(p==='light'){r.classList.remove('dark');r.style.colorScheme='light';return}var d=!!(m&&m.matches);r.classList.toggle('dark',d);r.style.colorScheme=d?'dark':'light'}function h(){if(c==='system')a('system')}if(m){if(m.addEventListener)m.addEventListener('change',h);else if(m.addListener)m.addListener(h)}window.__flarewatchSetThemePreference=function(p){try{if(p==='light'||p==='dark'||p==='system')a(p)}catch(e){}};a(c)}catch(e){}})()`;
+}

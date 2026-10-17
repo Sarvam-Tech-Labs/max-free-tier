@@ -1,0 +1,238 @@
+import { defineConfig } from 'vite-plus';
+
+// pnpm rewrites this file on every install.
+const ignorePnpmState = '!node_modules/.modules.yaml';
+
+export default defineConfig({
+  lint: {
+    ignorePatterns: [
+      '.wrangler/**',
+      'apps/status-page/dist/**',
+      'services/worker/dist/**',
+      'apps/status-page/src/routeTree.gen.ts',
+      'apps/status-page/worker-configuration.d.ts',
+      'tools/oxlint/anti-slop/**',
+    ],
+    jsPlugins: [
+      {
+        name: 'react-hooks-js',
+        specifier: 'eslint-plugin-react-hooks',
+      },
+      {
+        name: 'anti-slop',
+        specifier: './tools/oxlint/anti-slop/index.ts',
+      },
+      { name: 'shadcn', specifier: '@shadcn/lint' },
+    ],
+    rules: {
+      'react-hooks-js/set-state-in-render': 'error',
+      'anti-slop/no-chained-type-assertions': 'error',
+      'anti-slop/no-known-value-widening': 'error',
+      'anti-slop/no-module-mocking': 'error',
+      'anti-slop/no-object-parameters': 'error',
+      'anti-slop/no-reflect-apply': 'error',
+      'anti-slop/no-reflect-get': 'error',
+      'anti-slop/no-json-type-argument': 'error',
+      'anti-slop/no-unsafe-dictionary-type': 'error',
+      'anti-slop/no-widen-then-assert': 'error',
+      'anti-slop/no-zod-check-return-value': 'error',
+      'anti-slop/prefer-shared-helper': [
+        'error',
+        { objectGuard: 'isJsonObject', nonEmptyString: 'isNonEmptyString' },
+      ],
+      'anti-slop/require-safety-comment-for-type-assertion': 'error',
+      'typescript/no-floating-promises': 'error',
+      'typescript/no-misused-promises': 'error',
+      'typescript/no-unsafe-argument': 'error',
+      'typescript/no-unsafe-assignment': 'error',
+      'typescript/no-unsafe-call': 'error',
+      'typescript/no-unsafe-member-access': 'error',
+      'typescript/no-unsafe-return': 'error',
+      'shadcn/no-restyle': [
+        'error',
+        {
+          allow: ['layout'],
+          contracts: [
+            {
+              pattern: '^(TooltipTrigger|DropdownMenuTrigger)$',
+              allow: [
+                'layout',
+                'color',
+                'typography',
+                'spacing',
+                'shape',
+                'effects',
+                'motion',
+                'animate-calendar-cell',
+              ],
+            },
+          ],
+        },
+      ],
+      'shadcn/no-raw-colors': 'error',
+      'shadcn/no-arbitrary-values': ['error', { allow: ['layout'] }],
+      'shadcn/no-inline-styles': 'error',
+      'shadcn/no-unknown-classes': 'error',
+      'shadcn/require-static-classes': 'error',
+    },
+    overrides: [
+      {
+        // Composites that build on other primitives.
+        files: [
+          'apps/status-page/src/components/ui/calendar.tsx',
+          'apps/status-page/src/components/ui/datetime-picker.tsx',
+          'apps/status-page/src/components/ui/dropdown-menu.tsx',
+          'apps/status-page/src/components/ui/empty-state.tsx',
+          'apps/status-page/src/components/ui/field.tsx',
+          'apps/status-page/src/components/ui/month-picker.tsx',
+        ],
+        rules: {
+          'shadcn/no-restyle': 'off',
+        },
+      },
+      {
+        // These pass their own cva() output on, which the rule cannot read.
+        files: [
+          'apps/status-page/src/components/ui/calendar.tsx',
+          'apps/status-page/src/components/ui/status-cell.tsx',
+          'apps/status-page/src/components/ui/uptime-badge.tsx',
+        ],
+        rules: {
+          'shadcn/require-static-classes': 'off',
+        },
+      },
+      {
+        files: ['apps/status-page/src/**'],
+        rules: {
+          'anti-slop/no-implicit-locale': 'error',
+        },
+      },
+      {
+        files: [
+          'apps/status-page/tests/**',
+          'services/worker/tests/**',
+          'packages/shared/tests/**',
+        ],
+        rules: {
+          'anti-slop/require-safety-comment-for-type-assertion': 'off',
+        },
+      },
+      {
+        files: ['apps/status-page/tests/e2e/**/*.spec.ts'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [
+                {
+                  name: '@playwright/test',
+                  importNames: ['test'],
+                  message: "Import test from './fixtures': it fails a test on a client error.",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+    options: {
+      typeAware: true,
+      typeCheck: true,
+    },
+  },
+  fmt: {
+    ignorePatterns: [
+      '.wrangler/**',
+      '**/dist/**',
+      'worker-configuration.d.ts',
+      'routeTree.gen.ts',
+      'tools/oxlint/anti-slop/**',
+      'packages/shared/tests/fixtures/requests.json',
+      'services/worker/tests/fixtures/verdicts.json',
+    ],
+    printWidth: 100,
+    tabWidth: 2,
+    singleQuote: true,
+    trailingComma: 'all',
+  },
+  staged: {
+    '*.{js,cjs,mjs,jsx,ts,cts,mts,tsx,json,jsonc,md,yml,yaml}': 'vp check --fix',
+  },
+  run: {
+    tasks: {
+      build: {
+        command: 'vp run status-page-build && vp run worker-build',
+      },
+      test: {
+        command: 'vp run status-page-test && vp run worker-test && vp run shared-test',
+      },
+      dev: {
+        command: 'vp run --filter status-page --filter worker dev',
+        cache: false,
+      },
+      'status-page-build': {
+        command: 'vp build',
+        cwd: 'apps/status-page',
+        cache: {
+          input: [
+            { auto: true },
+            '!apps/status-page/.wrangler/**',
+            '!apps/status-page/dist/**',
+            '!apps/status-page/node_modules/.vite/**',
+            '!apps/status-page/node_modules/.vite-temp/**',
+          ],
+        },
+      },
+      'worker-build': {
+        command: 'vp exec wrangler deploy src/index.ts --outdir dist --dry-run',
+        cwd: 'services/worker',
+        cache: {
+          input: [{ auto: true }, '!services/worker/dist/**'],
+        },
+      },
+      'status-page-test': {
+        command: 'vp test run',
+        cwd: 'apps/status-page',
+        cache: {
+          input: [
+            { auto: true },
+            ignorePnpmState,
+            '!apps/status-page/node_modules/.vite/**',
+            '!apps/status-page/node_modules/.vite-temp/**',
+          ],
+        },
+      },
+      'worker-test': {
+        // The fingerprint holds the listing of the worker's node_modules, so Vite's cache and config bundle stay out of it.
+        command: 'vp test run --configLoader runner',
+        cwd: 'services/worker',
+        cache: {
+          input: [{ auto: true }, ignorePnpmState, '!node_modules/.vite/**'],
+        },
+      },
+      'shared-test': {
+        command: 'vp test run',
+        cwd: 'packages/shared',
+        cache: {
+          input: [
+            { auto: true },
+            ignorePnpmState,
+            '!packages/shared/node_modules/.vite/**',
+            '!packages/shared/node_modules/.vite-temp/**',
+          ],
+        },
+      },
+      ci: {
+        command: 'vp check && vp run test && vp run build',
+      },
+      'dev-status-page': {
+        command: 'vp run --filter status-page dev',
+        cache: false,
+      },
+      'dev-worker': {
+        command: 'vp run --filter worker dev',
+        cache: false,
+      },
+    },
+  },
+});

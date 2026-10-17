@@ -1,0 +1,86 @@
+import { IconAlertTriangle, IconCalendar, IconClock, IconRepeat } from '@tabler/icons-react';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
+import { nextMaintenanceOccurrence, type Maintenance } from '@flarewatch/shared';
+import {
+  describeRepeat,
+  formatTimeUntil,
+  formatDateRange,
+  getMaintenanceColors,
+  occurrenceDates,
+} from '@/lib/maintenance';
+
+interface MaintenanceCardProps {
+  maintenance: Maintenance;
+  monitorNames: Map<string, string>;
+  nowMs: number;
+  variant: 'active' | 'upcoming';
+}
+
+export function MaintenanceCard({
+  maintenance,
+  monitorNames,
+  nowMs,
+  variant,
+}: MaintenanceCardProps) {
+  const occurrence = nextMaintenanceOccurrence(maintenance, nowMs);
+  if (!occurrence) return null;
+  const colors = getMaintenanceColors(maintenance.color);
+  const { start, end } = occurrenceDates(occurrence);
+  const now = new Date(nowMs);
+  const isActive = variant === 'active';
+  const Icon = isActive ? IconAlertTriangle : IconCalendar;
+
+  return (
+    <div
+      className={cn(
+        'flex items-stretch rounded-lg border overflow-hidden',
+        isActive ? colors.bg : 'bg-card',
+        colors.border,
+      )}
+    >
+      <div className={cn('flex-1 min-w-0', isActive ? 'px-3 py-2' : 'px-3 py-2.5')}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Icon className={cn('size-4 shrink-0', colors.icon)} />
+          <h4 className="text-sm font-medium text-foreground">
+            {maintenance.title ?? 'Scheduled Maintenance'}
+          </h4>
+          {isActive ? (
+            <Badge variant="secondary">Ongoing</Badge>
+          ) : (
+            <Badge variant="outline">{`Starts in ${formatTimeUntil(start, now)}`}</Badge>
+          )}
+        </div>
+        {maintenance.body && (
+          <p className="mt-1.5 text-sm text-muted-foreground">{maintenance.body}</p>
+        )}
+        <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="flex items-start gap-1">
+            <IconClock aria-hidden="true" className="mt-px size-3.5 shrink-0" />
+            {formatDateRange(start, end)}
+          </span>
+          {isActive && end && (
+            <span className="font-medium text-status-degraded-text">
+              {`Ends in ${formatTimeUntil(end, now)}`}
+            </span>
+          )}
+          {maintenance.repeat && (
+            <span className="flex items-start gap-1">
+              <IconRepeat aria-hidden="true" className="mt-px size-3.5 shrink-0" />
+              {describeRepeat(maintenance.repeat)}
+            </span>
+          )}
+        </div>
+        {maintenance.monitors && maintenance.monitors.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {maintenance.monitors.map((id) => (
+              <Badge key={id} variant="outline">
+                {monitorNames.get(id) ?? id}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,5 @@
+# Operator sign-in (/login) and the /api/admin routes.
+# Format: JSON payload from:
+# vp run auth:secret -- <username> '<password>'
+# Do not manually edit JSON fields.
+FLAREWATCH_ADMIN_BASIC_AUTH=

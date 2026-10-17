@@ -1,0 +1,790 @@
+import { createTestHarness } from 'wrangler';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vite-plus/test';
+import type { CheckResult, HubView, Incident, LatencySample } from '@flarewatch/shared';
+import type { CheckRecord } from '../../src/hub/monitor-hub';
+import { check, down, up } from '../helpers/check-records';
+import { RELEASE_STEP, rewindStatements } from '../helpers/schema-rewind';
+import type { Rows, Run } from '../workerd/entry';
+
+// The hub in the workerd that wrangler deploys with. Storage is recreated after
+// every test, so a retried test starts empty.
+const server = createTestHarness({
+  root: `${import.meta.dirname}/..`,
+  workers: [{ configPath: './workerd/wrangler.toml' }],
+});
+
+beforeAll(() => server.listen(), 60_000);
+afterEach(() => server.reset(), 60_000);
+afterAll(() => server.close());
+
+const T0 = Date.parse('2025-01-15T12:00:00Z') / 1000;
+const HOUR = 60 * 60;
+const DAY = 24 * HOUR;
+const FLAP_SECONDS = 15 * 60;
+
+async function call<T>(hub: string, path: string, query = '', runs?: Run[]) {
+  const response = await server.fetch(
+    `${path}?hub=${hub}${query}`,
+    runs && { method: 'POST', body: JSON.stringify(runs) },
+  );
+  if (!response.ok) throw new Error(`${path} failed: ${response.status} ${await response.text()}`);
+  const rows = (prefix: string): Rows | undefined => {
+    const read = response.headers.get(`${prefix}rows-read`);
+    const written = response.headers.get(`${prefix}rows-written`);
+    return read === null || written === null
+      ? undefined
+      : { read: Number(read), written: Number(written) };
+  };
+  const measured = rows('');
+  if (!measured) throw new Error(`${path} sent no rows headers`);
+  return { body: (await response.json()) as T, rows: measured, startup: rows('startup-') };
+}
+
+const view = (hub: string) => call<HubView>(hub, '/view');
+const latency = (hub: string, id: string, now: number) =>
+  call<LatencySample[]>(hub, '/latency', `&id=${encodeURIComponent(id)}&now=${now}`);
+const record = (hub: string, runs: Run[]) => call<unknown[]>(hub, '/record', '', runs);
+/** Runs that decide alerts and report every down alert delivered. The body lists each run's alerts. */
+const alert = (hub: string, runs: Run[]) => call<string[][]>(hub, '/alert', '', runs);
+
+/** Ends the running instance as hibernation does; the next request starts a fresh one. */
+const evict = (hub: string) => server.getWorker().evictDurableObject('MONITOR_HUB', { name: hub });
+
+const storage = (hub: string) =>
+  server.getWorker().getDurableObjectStorage('MONITOR_HUB', { name: hub });
+
+const closed = (incidents: Incident[]) => incidents.filter(({ end }) => end !== undefined);
+
+it('keeps each skipped monitor’s latest sample across hours, retention and restart', async () => {
+  const hub = 'skipped-latest';
+  const slow = check('constructor', up(900));
+  slow.monitor.checkEveryMinutes = 1440;
+  const skipped = { monitor: slow.monitor };
+  await record(hub, [{ now: T0, records: [slow, check('api', up(10))] }]);
+  for (const now of [T0 + 60, T0 + HOUR, T0 + 13 * HOUR]) {
+    await record(hub, [{ now, records: [skipped, check('api', up(20))] }]);
+    await evict(hub);
+    const result = await view(hub);
+    expect(result.body.monitors[slow.monitor.id]?.latest).toEqual({
+      ping: 900,
+      loc: 'HEL',
+      time: T0,
+    });
+    expect(result.body.monitors.api?.latest).toEqual({ ping: 20, loc: 'HEL', time: now });
+    expect(result.rows.read).toBeLessThanOrEqual(6);
+  }
+  expect((await latency(hub, 'constructor', T0 + 13 * HOUR)).body).toEqual([]);
+}, 60_000);
+
+it('backfills each monitor’s latest sample on upgrade before any new check', async () => {
+  const hub = 'latest-upgrade';
+  await record(hub, [{ now: T0, records: [check('api', up(900)), check('db', up(10))] }]);
+  await record(hub, [
+    { now: T0 + HOUR, records: [{ monitor: check('api', up()).monitor }, check('db', up(20))] },
+  ]);
+  const sql = await storage(hub);
+  // Before step 12, which backfills each monitor's latest sample.
+  await rewindTo(sql, 11);
+  await sql.exec(
+    'INSERT INTO latency (hour, data) VALUES (?, ?)',
+    Math.floor(T0 / HOUR) - 1,
+    'not json',
+  );
+  await evict(hub);
+  const upgraded = await view(hub);
+  expect(upgraded.body.monitors.api?.latest).toEqual({ ping: 900, loc: 'HEL', time: T0 });
+  expect(upgraded.body.monitors.db?.latest).toEqual({ ping: 20, loc: 'HEL', time: T0 + HOUR });
+  await evict(hub);
+  expect((await view(hub)).body).toEqual(upgraded.body);
+}, 60_000);
+
+async function rewindTo(sql: Awaited<ReturnType<typeof storage>>, target: number) {
+  const [row] = await sql.exec('SELECT MAX(id) AS applied FROM _migrations');
+  for (const statement of rewindStatements(Number(row?.applied), target)) await sql.exec(statement);
+}
+
+async function insertHistory(
+  sql: Awaited<ReturnType<typeof storage>>,
+  id: string,
+  startedAt: number,
+  list: Incident[],
+  partChars: number,
+) {
+  await sql.exec('INSERT INTO monitors (id, started_at) VALUES (?, ?)', id, startedAt);
+  await sql.exec(
+    `INSERT INTO incidents (monitor_id, starts, errors, end_at)
+     SELECT ?, json_extract(value, '$.start'), json_extract(value, '$.error'),
+       json_extract(value, '$.end')
+     FROM json_each(?)`,
+    id,
+    JSON.stringify(list),
+  );
+  const parts: Incident[][] = [[]];
+  for (const incident of list) {
+    const part = parts[parts.length - 1] ?? [];
+    if (JSON.stringify([...part, incident]).length <= partChars) part.push(incident);
+    else parts.push([incident]);
+  }
+  for (const [part, incidents] of parts.entries()) {
+    await sql.exec(
+      'INSERT INTO incident_lists (monitor_id, part, data) VALUES (?, ?, ?)',
+      id,
+      part,
+      JSON.stringify(incidents),
+    );
+  }
+}
+
+describe('MonitorHub in workerd after an upgrade from 3.1', () => {
+  it('keeps the history, an outage still open, and the last 12 hours of latency', async () => {
+    const hub = 'upgrade';
+    await record(hub, [
+      { now: T0, records: [check('api', up()), check('db', up()), check('web', up())] },
+    ]);
+    const sql = await storage(hub);
+    await rewindTo(sql, RELEASE_STEP['3.1.0']);
+    const addIncident = (monitorId: string, starts: number[], errors: string[], end?: number) =>
+      sql.exec(
+        'INSERT INTO incidents (monitor_id, starts, errors, end_at) VALUES (?, ?, ?, ?)',
+        monitorId,
+        JSON.stringify(starts),
+        JSON.stringify(errors),
+        end ?? null,
+      );
+    await addIncident('api', [T0 - 7200], ['Timeout'], T0 - 7000);
+    await addIncident('api', [T0 - 3600, T0 - 3500], ['Timeout', 'HTTP 502'], T0 - 3400);
+    await sql.exec(`INSERT INTO incidents (monitor_id, starts, errors, end_at)
+      VALUES ('web', 'not json', '{"broken', ${T0 - 6000})`);
+    await addIncident('web', [T0 - 5000], ['Refused'], T0 - 4900);
+    await addIncident('db', [T0 - 300], ['Refused']);
+    const addSamples = (ats: number[], data: string) =>
+      sql.exec(
+        'INSERT INTO samples (at, data) SELECT value, ? FROM json_each(?)',
+        data,
+        JSON.stringify(ats),
+      );
+    const runs = (hourStart: number) => Array.from({ length: 70 }, (_, i) => hourStart + i * 50);
+    // 70 runs of 30,000 bytes in 10,000 characters: past the 1.9 MB a latency hour may hold.
+    await addSamples(runs(T0 - 3 * HOUR), `{"api":[7,"${'漢'.repeat(10_000)}"]}`);
+    // 70 runs of 200,000 bytes: an hour too large for one SQLite value in workerd.
+    await addSamples(runs(T0 - 5 * HOUR), `{"api":[8,"${'x'.repeat(200_000)}"]}`);
+    await addSamples([T0 - 13 * HOUR], '{"api":[5,"HEL"]}');
+    await addSamples([T0 - 120], 'not json');
+    await addSamples([T0 - 60], '{"api":[10,"HEL"],"db":[0,"AMS"]}');
+    await addSamples([T0], '{"api":[20,"HEL"]}');
+    await evict(hub);
+
+    const { monitors } = (await view(hub)).body;
+
+    expect(monitors.api).toMatchObject({
+      status: 'up',
+      incidents: [
+        { start: [T0 - 7200], error: ['Timeout'], end: T0 - 7000 },
+        { start: [T0 - 3600, T0 - 3500], error: ['Timeout', 'HTTP 502'], end: T0 - 3400 },
+      ],
+    });
+    expect(monitors.web?.incidents).toEqual([
+      { start: [T0 - 5000], error: ['Refused'], end: T0 - 4900 },
+    ]);
+    expect(monitors.db).toMatchObject({
+      status: 'down',
+      incidents: [{ start: [T0 - 300], error: ['Refused'] }],
+    });
+    expect((await latency(hub, 'api', T0)).body).toEqual([
+      { ping: 10, loc: 'HEL', time: T0 - 60 },
+      { ping: 20, loc: 'HEL', time: T0 },
+    ]);
+    // Older than the last 12 hours 3.1.0 kept, so not moved.
+    expect((await latency(hub, 'api', T0 - 12 * HOUR)).body.map(({ ping }) => ping)).toEqual([
+      10, 20,
+    ]);
+
+    await record(hub, [{ now: T0 + 60, records: [check('api', up()), check('db', up())] }]);
+
+    expect((await view(hub)).body.monitors.db).toMatchObject({
+      status: 'up',
+      incidents: [{ start: [T0 - 300], error: ['Refused'], end: T0 + 60 }],
+    });
+  }, 60_000);
+});
+
+describe('MonitorHub in workerd row budgets', () => {
+  it('prunes only the claiming monitor’s dates older than ninety days and leaves quiet runs alone', async () => {
+    const hub = 'expiry-retention';
+    const policy = { gracePeriodSeconds: 0, skipIds: [], skipErrorChanges: false };
+    const warned = (id: string, expiryDate: number): CheckRecord => ({
+      monitor: { id, name: id, method: 'GET', target: `https://${id}.example.com` },
+      check: {
+        location: 'HEL',
+        result: { ok: true, latency: 1, warning: { text: 'Domain expires soon', expiryDate } },
+      },
+    });
+    const id = "api'; --";
+    const run = (now: number, records: CheckRecord[]): Run => ({ now, records, policy });
+
+    const date = 21 * DAY;
+    expect((await alert(hub, [run(DAY, [warned(id, date), warned('other', date)])])).body).toEqual([
+      [`${id} expiry`, 'other expiry'],
+    ]);
+
+    for (let i = 1; i <= 40; i++) {
+      await alert(hub, [run(DAY + i, [warned('other', date + i)])]);
+    }
+    const quiet = await alert(hub, [run(DAY + 60, [check(id, up()), check('other', up())])]);
+    expect(quiet.body).toEqual([[]]);
+    expect(quiet.rows.written).toBeLessThanOrEqual(4);
+    expect(quiet.rows.read).toBeLessThanOrEqual(12);
+
+    expect((await alert(hub, [run(DAY + 120, [warned(id, date)])])).body).toEqual([[]]);
+
+    expect((await alert(hub, [run(date + 90 * DAY, [warned(id, date)])])).body).toEqual([[]]);
+    const expired = await alert(hub, [run(date + 90 * DAY + 1, [warned(id, date)])]);
+    expect(expired.body).toEqual([[`${id} expiry`]]);
+    expect(expired.rows.written).toBeLessThanOrEqual(8);
+  }, 60_000);
+  it('writes warning state only when it changes and one claim per expiry date', async () => {
+    const hub = 'warning-budget';
+    const run = (now: number, days: number): Run => ({
+      now,
+      policy: { gracePeriodSeconds: 0, skipIds: [], skipErrorChanges: false },
+      records: [
+        {
+          monitor: {
+            id: 'api',
+            name: 'API',
+            method: 'GET',
+            target: 'https://example.com',
+            sslCheckEnabled: true,
+            sslCheckDaysBeforeExpiry: 14,
+          },
+          check: {
+            location: 'HEL',
+            result: {
+              ok: true,
+              latency: 1,
+              ssl: { expiryDate: T0 + 86400 * 15, daysUntilExpiry: days },
+            },
+          },
+        },
+      ],
+    });
+    await alert(hub, [run(T0, 20)]);
+    const first = await alert(hub, [run(T0 + 60, 14)]);
+    const steady = await alert(hub, [run(T0 + 120, 14)]);
+    const clear = await alert(hub, [run(T0 + 180, 20)]);
+    const after = await alert(hub, [run(T0 + 240, 20)]);
+    expect(first.body).toEqual([['api expiry']]);
+    expect(first.rows.written).toBe(4);
+    expect(steady.rows.written).toBe(2);
+    expect(clear.rows.written).toBe(3);
+    expect(after.rows.written).toBe(2);
+    expect(steady.rows.read).toBeLessThanOrEqual(11);
+  }, 60_000);
+  it('writes the failure counter only as it grows and once on reset', async () => {
+    const hub = 'threshold-budget';
+    const run = (now: number, result: CheckResult): Run => {
+      const entry = check('api', result);
+      return {
+        now,
+        records: [
+          {
+            ...entry,
+            monitor: {
+              ...entry.monitor,
+              method: 'GET',
+              target: 'https://example.com',
+              downAfterChecks: 3,
+            },
+          },
+        ],
+      };
+    };
+    await record(hub, [run(T0, up())]);
+    const steady = await record(hub, [run(T0 + 60, up())]);
+    const first = await record(hub, [run(T0 + 120, down())]);
+    const second = await record(hub, [run(T0 + 180, down())]);
+    const reset = await record(hub, [run(T0 + 240, up())]);
+    const after = await record(hub, [run(T0 + 300, up())]);
+    expect(steady.rows.written).toBe(2);
+    expect(first.rows.written).toBe(3);
+    expect(second.rows.written).toBe(3);
+    expect(reset.rows.written).toBe(3);
+    expect(after.rows.written).toBe(2);
+    expect(first.rows.read).toBeLessThanOrEqual(8);
+    expect((await view(hub)).body.monitors.api?.incidents).toEqual([]);
+  }, 60_000);
+  const MONITORS = Array.from({ length: 6 }, (_, i) => `m${i}`);
+  // Half a minute into an hour, so the first measured runs fall in the hour now is in.
+  const NOW = T0 + 30;
+  const allUp = (now: number): Run => ({ now, records: MONITORS.map((id) => check(id, up())) });
+  const withM0 = (now: number, result: CheckResult): Run => ({
+    now,
+    records: MONITORS.map((id) => check(id, id === 'm0' ? result : up())),
+  });
+  /** The monitor whose history spans two incident_lists parts. */
+  const LONG = 'm5';
+  // 3.2.0 started a new part past 500,000 JSON characters, so a hub it wrote
+  // can hold a history in two parts.
+  const PART_CHARS = 500_000;
+
+  /**
+   * Six monitors sharing `total` closed incidents over 90 days, as 3.2.0 stores
+   * them, and 12 hours of latency. LONG instead holds 1,000 incidents with
+   * 500-character errors, which fill two parts. Returns the latency rows and
+   * the samples per monitor it stored.
+   */
+  async function seed(hub: string, total: number) {
+    await view(hub);
+    const sql = await storage(hub);
+    // Starts a day in, so no incident expires during the measured runs.
+    const first = NOW - 89 * DAY;
+    const history = (count: number, error: string): Incident[] => {
+      const gap = Math.floor((89 * DAY - 2 * HOUR) / count);
+      return Array.from({ length: count }, (_, i) => ({
+        start: [first + i * gap],
+        error: [error],
+        end: first + i * gap + 60,
+      }));
+    };
+    for (const id of MONITORS) {
+      const list =
+        id === LONG
+          ? history(1000, 'Unavailable '.padEnd(500, 'x'))
+          : history(total / MONITORS.length, 'Unavailable');
+      await insertHistory(sql, id, first, list, PART_CHARS);
+    }
+    expect(
+      await sql.exec('SELECT count(*) AS n FROM incident_lists WHERE monitor_id = ?', LONG),
+    ).toEqual([{ n: 2 }]);
+    const hours = new Map<number, Record<number, Record<string, [number, string]>>>();
+    let samples = 0;
+    for (let at = NOW - 12 * HOUR; at <= NOW; at += 60, samples++) {
+      const hour = hours.get(Math.floor(at / HOUR)) ?? {};
+      hour[at] = Object.fromEntries(MONITORS.map((id) => [id, [10, 'HEL']]));
+      hours.set(Math.floor(at / HOUR), hour);
+    }
+    for (const [hour, data] of hours) {
+      await sql.exec('INSERT INTO latency (hour, data) VALUES (?, ?)', hour, JSON.stringify(data));
+    }
+    await sql.exec("INSERT INTO meta (key, value) VALUES ('last_update', ?)", String(NOW));
+    return { hours: hours.size, samples };
+  }
+
+  /** What each operation costs on a hub that has just started, as after hibernation. */
+  async function measure(total: number) {
+    const hub = `budget-${total}`;
+    const seeded = await seed(hub, total);
+    const cold = async (request: () => Promise<{ rows: Rows; startup: Rows | undefined }>) => {
+      await evict(hub);
+      const { rows, startup } = await request();
+      if (!startup) throw new Error('A request after eviction did not start the hub');
+      // The costliest of all the starts.
+      costs.startup.read = Math.max(costs.startup.read, startup.read);
+      costs.startup.written = Math.max(costs.startup.written, startup.written);
+      return rows;
+    };
+    const costs = {
+      startup: { read: 0, written: 0 },
+      view: { read: 0, written: 0 },
+      latency: { read: 0, written: 0 },
+      allUp: { read: 0, written: 0 },
+      opening: { read: 0, written: 0 },
+      flapping: { read: 0, written: 0 },
+      held: { read: 0, written: 0 },
+      newError: { read: 0, written: 0 },
+      changingError: { read: 0, written: 0 },
+      longOpening: { read: 0, written: 0 },
+      longNewError: { read: 0, written: 0 },
+      alertOpening: { read: 0, written: 0 },
+      alertSteady: { read: 0, written: 0 },
+      alertErrorChange: { read: 0, written: 0 },
+      alertReminder: { read: 0, written: 0 },
+      alertRecovery: { read: 0, written: 0 },
+    };
+    costs.view = await cold(() => view(hub));
+    let samples: LatencySample[] = [];
+    costs.latency = await cold(async () => {
+      const response = await latency(hub, 'm0', NOW);
+      samples = response.body;
+      return response;
+    });
+    expect(samples).toHaveLength(seeded.samples);
+    latencyHours = seeded.hours;
+    costs.allUp = await cold(() => record(hub, [allUp(NOW + 60)]));
+    costs.opening = await cold(() => record(hub, [withM0(NOW + 120, down())]));
+    const flap = async (from: number, failure: (i: number) => CheckResult, rows: Rows) => {
+      for (let i = 0; i < 30; i++) {
+        const run = await cold(() =>
+          record(hub, [withM0(from + i * 60, i % 2 ? failure(i) : up())]),
+        );
+        rows.read += run.read;
+        rows.written += run.written;
+      }
+    };
+    // Closes on the first recovery and reopens on the next failure; from then on it flaps.
+    await record(hub, [withM0(NOW + 180, up()), withM0(NOW + 240, down())]);
+    await flap(NOW + 300, () => down(), costs.flapping);
+    // Up again, waiting out FLAP_SECONDS before the incident closes.
+    await record(hub, [withM0(NOW + 2100, up())]);
+    costs.held = await cold(() => record(hub, [withM0(NOW + 2160, up())]));
+    costs.newError = await cold(() => record(hub, [withM0(NOW + 2220, down('Other'))]));
+    await flap(NOW + 2280, (i) => down(`Error ${i}`), costs.changingError);
+
+    // m0 stays down with its last error, which writes nothing.
+    const withLong = (now: number, result: CheckResult): Run => ({
+      now,
+      records: MONITORS.map((id) =>
+        check(id, id === LONG ? result : id === 'm0' ? down('Error 29') : up()),
+      ),
+    });
+    costs.longOpening = await cold(() => record(hub, [withLong(NOW + 4080, down())]));
+    await record(hub, [
+      withLong(NOW + 4140, up()),
+      withLong(NOW + 4200, down()),
+      withLong(NOW + 4260, up()),
+    ]);
+    costs.longNewError = await cold(() => record(hub, [withLong(NOW + 4320, down('Other'))]));
+
+    // m1 alerts while m0 and LONG stay down with their last errors, skipped so they never alert.
+    const policy = { gracePeriodSeconds: 0, skipIds: ['m0', LONG], skipErrorChanges: false };
+    const withM1 = (now: number, result: CheckResult): Run => ({
+      now,
+      records: MONITORS.map((id): CheckRecord => {
+        if (id === 'm0') return check(id, down('Error 29'));
+        if (id === LONG) return check(id, down('Other'));
+        if (id !== 'm1') return check(id, up());
+        return {
+          monitor: {
+            id,
+            name: id,
+            method: 'GET',
+            target: `https://${id}.example.com`,
+            reminderEveryChecks: 30,
+          },
+          check: { location: 'HEL', result },
+        };
+      }),
+      policy,
+    });
+    const sent: string[][] = [];
+    const alerted = async (run: Run) => {
+      const response = await alert(hub, [run]);
+      sent.push(...response.body);
+      return response;
+    };
+    costs.alertOpening = await cold(() => alerted(withM1(NOW + 4380, down())));
+    costs.alertSteady = await cold(() => alerted(withM1(NOW + 4440, down())));
+    costs.alertErrorChange = await cold(() => alerted(withM1(NOW + 4500, down('Other'))));
+    // The down alert's run was the 1st here; the reminder falls due on the 31st.
+    const waiting = Array.from({ length: 27 }, (_, i) =>
+      withM1(NOW + 4560 + i * 60, down('Other')),
+    );
+    expect((await alert(hub, waiting)).body.flat()).toEqual([]);
+    costs.alertReminder = await cold(() => alerted(withM1(NOW + 6180, down('Other'))));
+    costs.alertRecovery = await cold(() => alerted(withM1(NOW + 6240, up())));
+    expect(sent).toEqual([['m1 down'], [], ['m1 error'], ['m1 reminder'], ['m1 recovered']]);
+
+    const { body } = await view(hub);
+    expect(body.monitors.m0?.status).toBe('down');
+    expect(body.monitors.m0?.incidents).toHaveLength(total / MONITORS.length + 1);
+    return costs;
+  }
+
+  type Costs = Awaited<ReturnType<typeof measure>>;
+  let small: Costs;
+  let large: Costs;
+  /** Latency rows the fixture stored, counted as it stored them. */
+  let latencyHours = 0;
+  beforeAll(async () => {
+    small = await measure(300);
+    large = await measure(3000);
+  }, 120_000);
+
+  const report = () => `300 incidents: ${JSON.stringify(small)}\n3,000: ${JSON.stringify(large)}`;
+
+  it('reads the same few rows to start, at 300 and 3,000 incidents', () => {
+    expect(large.startup, report()).toEqual(small.startup);
+    expect(small.startup.read, report()).toBeLessThanOrEqual(1);
+    expect(small.startup.written, report()).toBe(0);
+  });
+
+  it('reads the same few rows for a view at 300 and 3,000 incidents', () => {
+    expect(large.view, report()).toEqual(small.view);
+    expect(small.view.read, report()).toBeLessThanOrEqual(16);
+  });
+
+  it('reads a row per hour for a monitor’s latency, however long the history', () => {
+    expect(large.latency, report()).toEqual(small.latency);
+    expect(small.latency.read, report()).toBe(latencyHours);
+  });
+
+  it('reads and writes the same few rows for a run with every monitor up', () => {
+    expect(large.allUp, report()).toEqual(small.allUp);
+    expect(small.allUp.read, report()).toBeLessThanOrEqual(12);
+    expect(small.allUp.written, report()).toBeLessThanOrEqual(2);
+  });
+
+  it('reads and writes the same few rows for a run that opens an incident', () => {
+    expect(large.opening, report()).toEqual(small.opening);
+    expect(small.opening.read, report()).toBeLessThanOrEqual(15);
+    expect(small.opening.written, report()).toBeLessThanOrEqual(6);
+  });
+
+  it('writes the same rows to open an incident on a history of two parts', () => {
+    expect(large.longOpening, report()).toEqual(small.longOpening);
+    expect(small.longOpening.written, report()).toBeLessThanOrEqual(6);
+  });
+
+  it('writes the incident once for a new error during a hold on a history of two parts', () => {
+    expect(large.longNewError, report()).toEqual(small.longNewError);
+    expect(small.longNewError.written, report()).toBeLessThanOrEqual(4);
+  });
+
+  it('writes at most three rows a run while a monitor flaps', () => {
+    expect(large.flapping, report()).toEqual(small.flapping);
+    expect(small.flapping.written, report()).toBeLessThanOrEqual(30 * 3);
+  });
+
+  it('writes only the run’s own rows while a recovered monitor waits to close', () => {
+    expect(large.held, report()).toEqual(small.held);
+    expect(small.held.written, report()).toBeLessThanOrEqual(2);
+  });
+
+  it('writes the incident once when a waiting monitor fails with a new error', () => {
+    expect(large.newError, report()).toEqual(small.newError);
+    expect(small.newError.written, report()).toBeLessThanOrEqual(4);
+  });
+
+  it('writes a bounded number of rows while a monitor flaps with a new error each time', () => {
+    expect(large.changingError, report()).toEqual(small.changingError);
+    // Measured 106 on workerd 1.20260930: 15 up runs write 3 rows, 15 failures with a new
+    // error write 4, and the run that starts a new latency hour deletes the oldest.
+    expect(small.changingError.written, `measured 106; ${report()}`).toBeLessThanOrEqual(
+      15 * 3 + 15 * 4 + 1,
+    );
+  });
+
+  it('writes two rows for a reminder, its claim and its outcome, and reads only those rows', () => {
+    expect(large.alertReminder, report()).toEqual(small.alertReminder);
+    // Measured 22 read and 4 written on workerd 1.20260930: a steady run plus two
+    // updates of the incident row, each reading the row it writes.
+    expect(small.alertReminder.written, report()).toBeLessThanOrEqual(
+      small.alertSteady.written + 2,
+    );
+    expect(small.alertReminder.read, report()).toBeLessThanOrEqual(small.alertSteady.read + 2);
+  });
+
+  it.each([
+    // Measured on workerd 1.20260930 with the recovery queue, which every alerting run reads.
+    ['alertOpening', { read: 27, written: 8 }],
+    ['alertSteady', { read: 22, written: 2 }],
+    ['alertErrorChange', { read: 25, written: 5 }],
+    ['alertRecovery', { read: 27, written: 9 }],
+  ] as const)('reads and writes no more rows than before for %s', (name, before) => {
+    expect(large[name], report()).toEqual(small[name]);
+    expect(small[name].read, report()).toBeLessThanOrEqual(before.read);
+    expect(small[name].written, report()).toBeLessThanOrEqual(before.written);
+  });
+});
+
+describe('MonitorHub in workerd after a cold start', () => {
+  it('shows an outage and its end that runs recorded before hibernation', async () => {
+    const hub = 'cold-start';
+    await record(hub, [{ now: T0, records: [check('api', down()), check('db', up())] }]);
+    await evict(hub);
+
+    const outage = await view(hub);
+    expect(outage.body.monitors.api).toMatchObject({
+      status: 'down',
+      incidents: [{ start: [T0], error: ['Unavailable'] }],
+    });
+    expect((await latency(hub, 'db', T0)).body).toEqual([{ ping: 10, loc: 'HEL', time: T0 }]);
+    expect(outage.rows.read, JSON.stringify(outage.rows)).toBeLessThanOrEqual(10 + 2 * 2);
+
+    await record(hub, [{ now: T0 + 60, records: [check('api', up()), check('db', up())] }]);
+    await evict(hub);
+
+    const recovered = await view(hub);
+    expect(recovered.body.monitors.api).toMatchObject({
+      status: 'up',
+      incidents: [{ start: [T0], error: ['Unavailable'], end: T0 + 60 }],
+    });
+    expect(recovered.rows.read, JSON.stringify(recovered.rows)).toBeLessThanOrEqual(10 + 2 * 2);
+  }, 60_000);
+});
+
+describe('MonitorHub in workerd storage sizes', () => {
+  it('keeps every row of a long, changing history within the row limit', async () => {
+    const hub = 'sizes';
+    // Three bytes a character, so a part's bytes reach three times its characters.
+    const error = (label: string, chars = 500) => `${label} `.padEnd(chars, '漢');
+    let now = T0;
+    const send = async (runs: Run[]) => {
+      for (let i = 0; i < runs.length; i += 500) await record(hub, runs.slice(i, i + 500));
+    };
+    const history = async () => {
+      const sql = await storage(hub);
+      const largest = async (table: string) =>
+        (await sql.exec(`SELECT MAX(LENGTH(CAST(data AS BLOB))) AS bytes FROM ${table}`))[0]?.bytes;
+      // The Durable Objects row limit.
+      expect(await largest('incident_lists')).toBeLessThanOrEqual(2_000_000);
+      expect(await largest('latency')).toBeLessThanOrEqual(2_000_000);
+      await evict(hub);
+      const incidents = (await view(hub)).body.monitors.api?.incidents ?? [];
+      expect(closed(incidents).length).toBeLessThanOrEqual(1000);
+      expect(JSON.stringify(closed(incidents)).length).toBeLessThanOrEqual(1_000_000);
+      return incidents;
+    };
+
+    // 978 short outages and 22 at the segment cap, with errors short enough to
+    // stay under the size cap: the next 100 outages cross the count cap alone.
+    const stored: Incident[] = [];
+    for (let i = 0; i < 978; i++, now += FLAP_SECONDS + 120) {
+      stored.push({ start: [now], error: [error(`short-${i}`)], end: now + 60 });
+    }
+    for (let i = 0; i < 22; i++, now += FLAP_SECONDS + 60) {
+      const start: number[] = [];
+      const errors: string[] = [];
+      for (let j = 0; j < 100; j++, now += 60) {
+        start.push(now);
+        errors.push(error(`stored-${i}-${j}`, 150));
+      }
+      stored.push({ start, error: errors, end: now });
+    }
+    expect(JSON.stringify(stored).length).toBeLessThan(1_000_000);
+    await view(hub);
+    // As 3.4.0 stored it, in parts of up to 2,000,000 characters.
+    const sql = await storage(hub);
+    await insertHistory(sql, 'api', T0, stored, 2_000_000);
+    await rewindTo(sql, RELEASE_STEP['3.4.0']);
+    await evict(hub);
+    expect((await view(hub)).body.monitors.api?.incidents).toEqual(stored);
+
+    const short: Run[] = [];
+    for (let i = 1000; i < 1100; i++, now += FLAP_SECONDS + 120) {
+      short.push({ now, records: [check('api', down(error(`short-${i}`)))] });
+      short.push({ now: now + 60, records: [check('api', up())] });
+    }
+    await send(short);
+    const kept = closed(await history());
+    expect({
+      count: kept.length,
+      oldest: kept[0]?.error,
+      newest: kept[kept.length - 1]?.error,
+    }).toEqual({ count: 1000, oldest: [error('short-100')], newest: [error('short-1099')] });
+
+    const long: Run[] = [];
+    for (let i = 0; i < 3; i++, now += FLAP_SECONDS + 60) {
+      for (let j = 0; j < 105; j++, now += 60) {
+        long.push({ now, records: [check('api', down(error(`${i}-${j}`)))] });
+      }
+      long.push({ now, records: [check('api', up())] });
+    }
+    await send(long);
+    const changed = closed(await history());
+    // The count cap alone would drop three; the size cap drops more.
+    expect(changed.length).toBeLessThan(997);
+    expect(changed[changed.length - 1]?.error).toHaveLength(100);
+    expect(changed[changed.length - 1]?.error[99]).toBe(error('2-104'));
+
+    await send([{ now, records: [check('api', down(error('open')))] }]);
+    const incidents = await history();
+    expect(incidents.length).toBe(closed(incidents).length + 1);
+    expect(incidents[incidents.length - 1]).toEqual({ start: [now], error: [error('open')] });
+  }, 120_000);
+
+  it('splits a legacy incident too large for one row down to its first and latest segments', async () => {
+    const hub = 'legacy-segments';
+    // A release before 3.2.0 kept every segment, and 1,400 of them pass 2 MB.
+    const start = Array.from({ length: 1400 }, (_, i) => T0 + i * 60);
+    const error = start.map((_, i) => `e${i} `.padEnd(500, '漢'));
+    const legacy: Incident = { start, error };
+    await view(hub);
+    const sql = await storage(hub);
+    await insertHistory(sql, 'api', T0, [legacy], 6_000_000);
+    await rewindTo(sql, RELEASE_STEP['3.4.0']);
+    await evict(hub);
+
+    const kept = [0, ...Array.from({ length: 99 }, (_, i) => 1301 + i)];
+    expect((await view(hub)).body.monitors.api?.incidents).toEqual([
+      { start: kept.map((i) => start[i]), error: kept.map((i) => error[i]) },
+    ]);
+    const [largest] = await (
+      await storage(hub)
+    ).exec('SELECT MAX(LENGTH(CAST(data AS BLOB))) AS bytes FROM incident_lists');
+    expect(largest?.bytes).toBeLessThanOrEqual(2_000_000);
+  }, 60_000);
+});
+
+it('rolls back every change when storage fails and accepts the same run on retry', async () => {
+  const hub = 'rollback';
+  await record(hub, [{ now: T0, records: [check('api', up()), check('db', up())] }]);
+  const before = (await view(hub)).body;
+  const samples = (await latency(hub, 'api', T0 + 60)).body;
+  const sql = await storage(hub);
+  await sql.exec(`CREATE TRIGGER fail_run BEFORE UPDATE ON meta
+    WHEN NEW.key = 'last_update' BEGIN SELECT RAISE(ABORT, 'storage full'); END`);
+  const run = {
+    now: T0 + 60,
+    records: [check('api', down()), check('db', down())],
+    policy: { gracePeriodSeconds: 0, skipIds: [], skipErrorChanges: false },
+  };
+  await expect(record(hub, [run])).rejects.toThrow();
+  expect((await view(hub)).body).toEqual(before);
+  expect((await latency(hub, 'api', T0 + 60)).body).toEqual(samples);
+  await sql.exec('DROP TRIGGER fail_run');
+  expect((await alert(hub, [run])).body).toEqual([['api down', 'db down']]);
+  expect((await view(hub)).body.lastUpdate).toBe(T0 + 60);
+  expect((await latency(hub, 'api', T0 + 60)).body.slice(-1)[0]?.time).toBe(T0 + 60);
+}, 60_000);
+
+it('keeps the threshold count and the first failure time across a restart', async () => {
+  const hub = 'threshold-restart';
+  const monitor = {
+    id: 'api',
+    name: 'API',
+    method: 'GET' as const,
+    target: 'https://api.example.com',
+    downAfterChecks: 3,
+  };
+  const failing = (now: number): Run => ({
+    now,
+    records: [{ monitor, check: { location: 'HEL', result: down() } }],
+  });
+  await record(hub, [failing(T0), failing(T0 + 60)]);
+  expect((await view(hub)).body.monitors.api?.incidents).toEqual([]);
+  await evict(hub);
+  await record(hub, [failing(T0 + 120)]);
+  expect((await view(hub)).body.monitors.api).toMatchObject({
+    status: 'down',
+    incidents: [{ start: [T0], error: ['Unavailable'] }],
+  });
+}, 60_000);
+
+it('keeps expiry warnings and their delivered claims across a restart', async () => {
+  const hub = 'expiry-restart';
+  const warned: CheckRecord = check('api', {
+    ok: true,
+    latency: 10,
+    warning: { text: 'Domain expires soon', expiryDate: T0 + 14 * DAY },
+  });
+  const policy = { gracePeriodSeconds: 0, skipIds: [], skipErrorChanges: false };
+  expect((await alert(hub, [{ now: T0, records: [warned], policy }])).body).toEqual([
+    ['api expiry'],
+  ]);
+  await evict(hub);
+  expect((await view(hub)).body.monitors.api).toMatchObject({
+    status: 'degraded',
+    warning: 'Domain expires soon',
+    incidents: [],
+  });
+  expect((await alert(hub, [{ now: T0 + 60, records: [warned], policy }])).body).toEqual([[]]);
+  const renewed = check('api', {
+    ok: true,
+    latency: 10,
+    warning: { text: 'Renewed domain expires soon', expiryDate: T0 + 28 * DAY },
+  });
+  expect((await alert(hub, [{ now: T0 + 120, records: [renewed], policy }])).body).toEqual([
+    ['api expiry'],
+  ]);
+}, 60_000);

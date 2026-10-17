@@ -1,0 +1,291 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local('Arial'), local('Helvetica Neue'), local('Helvetica'), local('sans-serif');
+  ascent-override: 90%;
+  descent-override: 22.43%;
+  line-gap-override: 0%;
+  size-adjust: 107.64%;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+body {
+  @apply m-0;
+  font-family:
+    'Inter Variable', 'Inter Fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto',
+    'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.67 0.16 58);
+  --primary-foreground: oklch(0.99 0.02 95);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.88 0.15 92);
+  --chart-2: oklch(0.77 0.16 70);
+  --chart-3: oklch(0.67 0.16 58);
+  --chart-4: oklch(0.56 0.15 49);
+  --chart-5: oklch(0.47 0.12 46);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.67 0.16 58);
+  --sidebar-primary-foreground: oklch(0.99 0.02 95);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+
+  /* Latency chart fill, neutral fade from the line colour (see latency-chart.tsx). */
+  --chart-fill-top: 0.18;
+  --chart-fill-bottom: 0.02;
+
+  --status-operational: oklch(0.696 0.17 162.48);
+  --status-operational-text: oklch(0.52 0.12 162.48);
+  --status-operational-bg: oklch(0.979 0.021 166.113);
+  --status-operational-border: oklch(0.905 0.093 164.15);
+  --status-degraded: oklch(0.769 0.188 70.08);
+  --status-degraded-bg: oklch(0.987 0.022 95.277);
+  --status-degraded-border: oklch(0.924 0.12 95.746);
+  --status-degraded-text: oklch(0.55 0.14 60);
+  --status-down: oklch(0.637 0.237 25.331);
+  --status-down-bg: oklch(0.971 0.013 17.38);
+  --status-down-border: oklch(0.885 0.062 18.334);
+  --status-down-text: oklch(0.55 0.22 27);
+  --status-maintenance: oklch(0.623 0.214 259.815);
+  --status-maintenance-text: oklch(0.52 0.2 259.815);
+  --status-maintenance-bg: oklch(0.97 0.014 254.604);
+  --status-maintenance-border: oklch(0.882 0.059 254.128);
+  --status-unknown: oklch(0.708 0 0);
+  --status-unknown-bg: oklch(0.97 0 0);
+  --status-unknown-border: oklch(0.922 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.77 0.16 70);
+  --primary-foreground: oklch(0.28 0.07 46);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.371 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.88 0.15 92);
+  --chart-2: oklch(0.77 0.16 70);
+  --chart-3: oklch(0.67 0.16 58);
+  --chart-4: oklch(0.56 0.15 49);
+  --chart-5: oklch(0.47 0.12 46);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.77 0.16 70);
+  --sidebar-primary-foreground: oklch(0.28 0.07 46);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+
+  --status-operational: oklch(0.696 0.17 162.48);
+  --status-operational-text: var(--status-operational);
+  --status-operational-bg: oklch(0.262 0.051 172.552 / 30%);
+  --status-operational-border: oklch(0.378 0.077 168.94);
+  --status-degraded: oklch(0.769 0.188 70.08);
+  --status-degraded-bg: oklch(0.279 0.077 45.635 / 30%);
+  --status-degraded-border: oklch(0.473 0.137 46.201);
+  --status-degraded-text: var(--status-degraded);
+  --status-down: oklch(0.637 0.237 25.331);
+  --status-down-bg: oklch(0.258 0.092 26.042 / 30%);
+  --status-down-border: oklch(0.396 0.141 25.723);
+  --status-down-text: var(--status-down);
+  --status-maintenance: oklch(0.623 0.214 259.815);
+  --status-maintenance-text: var(--status-maintenance);
+  --status-maintenance-bg: oklch(0.282 0.091 267.935 / 30%);
+  --status-maintenance-border: oklch(0.379 0.146 265.522);
+  --status-unknown: oklch(0.708 0 0);
+  --status-unknown-bg: oklch(0.269 0 0);
+  --status-unknown-border: oklch(1 0 0 / 10%);
+
+  --chart-fill-top: 0.2;
+  --chart-fill-bottom: 0.03;
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', 'Inter Fallback', sans-serif;
+  --text-2xs: 0.625rem;
+  --text-caption: 0.8rem;
+  --radius-control-xs: min(var(--radius-md), 8px);
+  --radius-control-sm: min(var(--radius-md), 10px);
+  /* Concentric with the rounded-lg cards inside, which sit px-3 from the group edge. */
+  --radius-card-group: calc(var(--radius-lg) + var(--spacing) * 3);
+  --transition-props-control: color, box-shadow;
+  --transition-props-toggle: color, background-color, box-shadow;
+  --transition-props-cell: scale, filter, box-shadow;
+  --transition-props-bar: scale, filter, background-color, box-shadow;
+  --transition-props-reveal: opacity, filter, scale;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-status-operational: var(--status-operational);
+  --color-status-operational-text: var(--status-operational-text);
+  --color-status-operational-bg: var(--status-operational-bg);
+  --color-status-operational-border: var(--status-operational-border);
+  --color-status-degraded: var(--status-degraded);
+  --color-status-degraded-bg: var(--status-degraded-bg);
+  --color-status-degraded-border: var(--status-degraded-border);
+  --color-status-degraded-text: var(--status-degraded-text);
+  --color-status-down: var(--status-down);
+  --color-status-down-bg: var(--status-down-bg);
+  --color-status-down-border: var(--status-down-border);
+  --color-status-down-text: var(--status-down-text);
+  --color-status-maintenance: var(--status-maintenance);
+  --color-status-maintenance-text: var(--status-maintenance-text);
+  --color-status-maintenance-bg: var(--status-maintenance-bg);
+  --color-status-maintenance-border: var(--status-maintenance-border);
+  --color-status-unknown: var(--status-unknown);
+  --color-status-unknown-bg: var(--status-unknown-bg);
+  --color-status-unknown-border: var(--status-unknown-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply font-sans bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+    scrollbar-gutter: stable;
+  }
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
+/* Entrance animation for calendar day cells */
+@keyframes calendar-cell-in {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-calendar-cell {
+  animation: calendar-cell-in 0.3s ease-out var(--cell-delay, 0ms) both;
+}
+
+@utility transition-props-* {
+  transition-property: --value(--transition-props-*);
+  transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration, var(--default-transition-duration));
+}
+
+@utility bg-running-cell {
+  background-image: linear-gradient(
+    to top,
+    var(--status-maintenance) 45%,
+    var(--status-maintenance-bg) 45%
+  );
+}
+
+::view-transition-group(*) {
+  animation-duration: 250ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .animate-calendar-cell {
+    animation: none;
+    opacity: 1;
+  }
+
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none;
+  }
+}
+
+/* Latency chart: thin x-axis ticks/labels as the plot area narrows. The plot box sets
+   container-type: inline-size; tier 0 (round boundaries) always shows, tier 1 (the
+   in-between ticks) drops on narrow widths. */
+@container (max-width: 28rem) {
+  [data-chart-tier='1'] {
+    display: none;
+  }
+}

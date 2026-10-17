@@ -1,0 +1,295 @@
+import type { LatencySample, StatusView } from '@flarewatch/shared';
+import { formatUtc } from './date';
+import { UPTIME_DAYS, UPTIME_THRESHOLDS } from './constants';
+
+const MIN_MONITOR_AGE_SECONDS = 60;
+
+/** state.lastUpdate, not Date.now(), so SSR and hydration agree; null before the first check run. */
+function getNowSeconds(state: StatusView): number | null {
+  return state.lastUpdate > 0 ? state.lastUpdate : null;
+}
+
+function hasMonitorData(monitorId: string, state: StatusView): boolean {
+  const nowSec = getNowSeconds(state);
+  if (nowSec === null) return false;
+  const startedAt = state.monitors[monitorId]?.startedAt;
+  if (!startedAt) return false;
+  return nowSec - startedAt >= MIN_MONITOR_AGE_SECONDS;
+}
+
+export function calculateUptimePercent(monitorId: string, state: StatusView): number | null {
+  const nowSec = getNowSeconds(state);
+  if (nowSec === null) return null;
+  if (!hasMonitorData(monitorId, state)) return null;
+
+  const incidents = state.monitors[monitorId]?.incidents;
+  if (!incidents || incidents.length === 0) return 100;
+  const windowDaysAgoSec = nowSec - UPTIME_DAYS * 24 * 60 * 60;
+
+  const monitorStartSec = state.monitors[monitorId]?.startedAt;
+  const windowStartSec =
+    monitorStartSec && monitorStartSec > windowDaysAgoSec ? monitorStartSec : windowDaysAgoSec;
+
+  const totalTimeSec = nowSec - windowStartSec;
+  if (totalTimeSec <= 0) return 100;
+
+  let totalDowntimeSec = 0;
+
+  for (const incident of incidents) {
+    const firstStart = incident.start[0];
+    if (firstStart === undefined) continue;
+    const incidentStartSec = Math.max(firstStart, windowStartSec);
+    const incidentEndSec = Math.min(incident.end ?? nowSec, nowSec);
+
+    if (incidentEndSec > incidentStartSec) {
+      totalDowntimeSec += incidentEndSec - incidentStartSec;
+    }
+  }
+
+  const uptimePercent = ((totalTimeSec - totalDowntimeSec) / totalTimeSec) * 100;
+
+  return Math.max(0, Math.min(100, uptimePercent));
+}
+
+export function getMonitorError(monitorId: string, state: StatusView): string | null {
+  const incidents = state.monitors[monitorId]?.incidents;
+  const lastIncident = incidents?.[incidents.length - 1];
+  if (!lastIncident || lastIncident.end !== undefined) return null;
+  return lastIncident.error[lastIncident.error.length - 1] ?? 'Unknown error';
+}
+
+export function getLatestLatency(monitorId: string, state: StatusView): LatencySample | null {
+  return state.monitors[monitorId]?.latest ?? null;
+}
+
+/** Rounds like `toFixed`, but uptime below 100 never shows as 100%. */
+export function formatPercent(percent: number, decimals: number): string {
+  const rounded = percent.toFixed(decimals);
+  if (percent < 100 && Number(rounded) >= 100) {
+    return `${(100 - 10 ** -decimals).toFixed(decimals)}%`;
+  }
+  return `${rounded}%`;
+}
+
+export function formatUptimeDisplay(
+  uptimePercent: number | null,
+  hasStarted: boolean,
+  decimals: number,
+): string {
+  if (uptimePercent !== null) {
+    return formatPercent(uptimePercent, decimals);
+  }
+  return hasStarted ? 'Starting...' : 'Pending';
+}
+
+type DayStatus = 'up' | 'down' | 'partial' | 'unknown';
+
+interface DayIncidentDetail {
+  startSec: number;
+  startTime: string;
+  endTime: string;
+  error: string;
+}
+
+export interface AggregatedDayIncident extends DayIncidentDetail {
+  monitorName: string;
+  monitorId: string;
+}
+
+export interface AggregatedDayData {
+  date: Date;
+  status: DayStatus;
+  uptime: number | null;
+  incidents: AggregatedDayIncident[];
+}
+
+export interface DailyStatusData {
+  date: Date;
+  status: DayStatus;
+  uptime: number;
+  downtime: number;
+  incidents: DayIncidentDetail[];
+}
+
+function createUnknownDay(date: Date): DailyStatusData {
+  return { date, status: 'unknown', uptime: 100, downtime: 0, incidents: [] };
+}
+
+function generateUnknownDays(baseDate: Date): DailyStatusData[] {
+  const days: DailyStatusData[] = [];
+  for (let i = UPTIME_DAYS - 1; i >= 0; i--) {
+    const date = new Date(baseDate);
+    date.setUTCDate(date.getUTCDate() - i);
+    date.setUTCHours(0, 0, 0, 0);
+    days.push(createUnknownDay(date));
+  }
+  return days;
+}
+
+export function generateDailyStatus(monitorId: string, state: StatusView): DailyStatusData[] {
+  const days: DailyStatusData[] = [];
+  const nowSec = getNowSeconds(state);
+
+  if (nowSec === null) {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    return generateUnknownDays(today);
+  }
+
+  const nowMs = nowSec * 1000;
+  const now = new Date(nowMs);
+  const incidents = state.monitors[monitorId]?.incidents ?? [];
+  const monitorStartSec = state.monitors[monitorId]?.startedAt;
+
+  if (!hasMonitorData(monitorId, state)) {
+    return generateUnknownDays(now);
+  }
+
+  for (let i = UPTIME_DAYS - 1; i >= 0; i--) {
+    const date = new Date(now);
+    date.setUTCDate(date.getUTCDate() - i);
+    date.setUTCHours(0, 0, 0, 0);
+
+    const dayStart = date.getTime();
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+    const dayStartSec = Math.floor(dayStart / 1000);
+    const dayEndSec = Math.floor(dayEnd / 1000);
+
+    if (monitorStartSec && dayEndSec <= monitorStartSec) {
+      days.push(createUnknownDay(date));
+      continue;
+    }
+
+    const effectiveDayStartSec = monitorStartSec
+      ? Math.max(dayStartSec, monitorStartSec)
+      : dayStartSec;
+    const effectiveDayEndSec = Math.min(dayEndSec, nowSec);
+    const effectiveDayStartMs = effectiveDayStartSec * 1000;
+    const effectiveDayEndMs = effectiveDayEndSec * 1000;
+
+    let downtimeInDay = 0;
+    const dayIncidents: DayIncidentDetail[] = [];
+
+    for (const incident of incidents) {
+      const incidentStart = incident.start[0];
+      if (incidentStart === undefined) continue;
+      const incidentEnd = incident.end ?? nowSec;
+
+      if (incidentEnd > effectiveDayStartSec && incidentStart < effectiveDayEndSec) {
+        const overlapStart = Math.max(incidentStart, effectiveDayStartSec);
+        const overlapEnd = Math.min(incidentEnd, effectiveDayEndSec);
+        downtimeInDay += (overlapEnd - overlapStart) * 1000;
+
+        for (let j = 0; j < incident.error.length; j++) {
+          const partStart = incident.start[j];
+          if (partStart === undefined) continue;
+          const nextStart = incident.start[j + 1];
+          const partEnd =
+            j === incident.error.length - 1 ? (incident.end ?? nowSec) : (nextStart ?? nowSec);
+
+          if (partEnd > effectiveDayStartSec && partStart < effectiveDayEndSec) {
+            const clampedStart = Math.max(partStart, effectiveDayStartSec);
+            const clampedEnd = Math.min(partEnd, effectiveDayEndSec);
+            const errorMsg = incident.error[j];
+
+            dayIncidents.push({
+              startSec: partStart,
+              startTime: formatUtc(new Date(clampedStart * 1000), 'HH:mm'),
+              endTime: formatUtc(new Date(clampedEnd * 1000), 'HH:mm'),
+              error: errorMsg ?? 'Unknown error',
+            });
+          }
+        }
+      }
+    }
+
+    const dayDuration = effectiveDayEndMs - effectiveDayStartMs;
+    const uptimePercent =
+      dayDuration > 0 ? ((dayDuration - downtimeInDay) / dayDuration) * 100 : 100;
+
+    let status: DayStatus;
+    if (dayStart > nowMs || effectiveDayEndSec <= effectiveDayStartSec) {
+      status = 'unknown';
+    } else if (uptimePercent >= UPTIME_THRESHOLDS.EXCELLENT) {
+      status = 'up';
+    } else if (uptimePercent >= UPTIME_THRESHOLDS.GOOD) {
+      status = 'partial';
+    } else {
+      status = 'down';
+    }
+
+    days.push({
+      date,
+      status,
+      uptime: uptimePercent,
+      downtime: downtimeInDay,
+      incidents: dayIncidents,
+    });
+  }
+
+  return days;
+}
+
+export function generateAggregateDailyStatus(
+  monitorIds: string[],
+  monitorNameMap: Map<string, string>,
+  state: StatusView,
+): AggregatedDayData[] {
+  if (monitorIds.length === 0) {
+    return [];
+  }
+
+  const allMonitorDays = monitorIds.map((id) => generateDailyStatus(id, state));
+  const dayCount = allMonitorDays[0]?.length ?? 0;
+  const result: AggregatedDayData[] = [];
+
+  for (let dayIndex = 0; dayIndex < dayCount; dayIndex++) {
+    const date = allMonitorDays[0]![dayIndex]!.date;
+
+    let hasDown = false;
+    let hasPartial = false;
+    let allUnknown = true;
+    let uptimeSum = 0;
+    let uptimeCount = 0;
+    const incidents: AggregatedDayIncident[] = [];
+
+    for (let m = 0; m < monitorIds.length; m++) {
+      const dayData = allMonitorDays[m]![dayIndex]!;
+      const monitorId = monitorIds[m]!;
+      const monitorName = monitorNameMap.get(monitorId) ?? monitorId;
+
+      if (dayData.status !== 'unknown') {
+        allUnknown = false;
+        uptimeSum += dayData.uptime;
+        uptimeCount++;
+      }
+
+      if (dayData.status === 'down') hasDown = true;
+      if (dayData.status === 'partial') hasPartial = true;
+
+      for (const incident of dayData.incidents) {
+        incidents.push({ ...incident, monitorName, monitorId });
+      }
+    }
+
+    let status: DayStatus;
+    if (allUnknown) {
+      status = 'unknown';
+    } else if (hasDown) {
+      status = 'down';
+    } else if (hasPartial) {
+      status = 'partial';
+    } else {
+      status = 'up';
+    }
+
+    result.push({
+      date,
+      status,
+      uptime: uptimeCount > 0 ? uptimeSum / uptimeCount : null,
+      incidents,
+    });
+  }
+
+  return result;
+}

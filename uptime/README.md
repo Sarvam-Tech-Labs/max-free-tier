@@ -1,0 +1,66 @@
+<p align="center">
+  <img src="apps/status-page/public/favicon.svg" width="64" alt="" />
+</p>
+
+<h1 align="center">FlareWatch</h1>
+
+<p align="center">
+  A self-hosted uptime monitor and status page that runs free on Cloudflare Workers.<br />
+  Fork it, edit the config, and push. There's no server to look after.
+</p>
+
+<p align="center">
+  <a href="https://flarewatch.app">Website</a> ·
+  <a href="https://demo.flarewatch.app">Live demo</a> ·
+  <a href="docs/deploy.md">Deploy</a> ·
+  <a href="#docs">Docs</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/how-it-works.svg" alt="How FlareWatch works. Inside your Cloudflare account, a monitor Worker runs every minute. It checks your sites, APIs and domains, saves the results in a Durable Object, and sends alerts when something goes down or comes back up. Your scheduled jobs ping the status page Worker when they finish. The status page Worker reads the Durable Object through the monitor Worker and serves the status page. Visitors see what you publish, and you sign in to see everything. Checks can also run from other regions or private networks through Globalping, your own proxy or Workers VPC, and a failing check can be confirmed there before it counts." />
+</p>
+
+## What you get
+
+- Checks for websites, APIs, TCP ports, DNS records and domain expiry, every minute or less often if you like. Match a status code, a keyword, a header or a JSON value, and get a warning before a certificate or a domain expires.
+- A failing check can be confirmed from a second place first, through Globalping or your own proxy, so one bad network path doesn't open an incident. You can also wait for a few failed checks in a row.
+- Checks inside your private network, through Workers VPC and a Cloudflare Tunnel.
+- Heartbeats for backups, cron jobs and CI. They ping when they finish, and you hear about it when one doesn't.
+- Alerts to Slack, Discord, Telegram, ntfy, email and [more](docs/alerts.md). When a shared proxy or server goes down, you get one alert, not ten. Each channel can watch only the monitors you pick, you can ask for a reminder while something stays down, and a run with many alerts can send one summary instead.
+- A status page with uptime, response times and incident history. A slow monitor shows as degraded, maintenance windows can repeat, announcements show under the status banner, and operators can run a check on the spot.
+- Sign-in with a password or your own identity provider (Pocket ID, Google, GitHub and others), for you and anyone you choose to let in. The whole page can be private too.
+- Badges as JSON or SVG, embeds, an Atom feed and a JSON API.
+
+## Deploy
+
+1. Fork this repo, then enable workflows in your fork's **Actions** tab.
+2. Add two repository secrets, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The [deploy guide](docs/deploy.md) lists the token permissions. Other secrets are optional.
+3. List your monitors and alerts in `packages/config/src/worker.ts`. Page settings, like the title, are in `packages/config/src/public.ts`.
+4. Push to `main`. GitHub Actions tests and deploys both Workers, then prints your status page URL.
+5. To pick up new releases, [update your fork](docs/deploy.md#update-your-fork).
+
+A monitor is one line:
+
+```ts
+{ id: 'api', name: 'API', method: 'GET', target: 'https://example.com/health' }
+```
+
+## Cost
+
+Nothing, for a personal or small-team page. FlareWatch uses two Workers, a Durable Object, one KV namespace and one cron trigger, all within Cloudflare's free tier. The limit you're most likely to reach is 100,000 requests a day from page traffic. The [deploy guide](docs/deploy.md#cost) says what uses them.
+
+## Compared to others
+
+- [Uptime Kuma](https://github.com/louislam/uptime-kuma) and [Gatus](https://github.com/TwiN/gatus) do more, but they need a server that's always on.
+- [Upptime](https://github.com/upptime/upptime) needs no server either. It runs on GitHub Actions, which schedule checks every 5 minutes at best.
+- FlareWatch needs no server, checks every minute, and costs nothing on the free tier.
+
+## Docs
+
+- [Deploy](docs/deploy.md): API token, secrets, custom domain, cost, uninstall
+- [Monitors](docs/monitors.md): websites, TCP ports, DNS, domains, heartbeats, private monitors, proxies, private networks
+- [Alerts](docs/alerts.md): every channel and its setup
+- [Status page](docs/status-page.md): sign-in, maintenance, announcements, private pages, API, badges, feed, embeds
+- [Development](DEVELOPMENT.md): working on FlareWatch itself
+
+MIT licensed. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

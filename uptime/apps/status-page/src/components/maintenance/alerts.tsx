@@ -1,0 +1,62 @@
+import { IconCalendar } from '@tabler/icons-react';
+import type { Maintenance } from '@flarewatch/shared';
+import type { PublicMonitor } from '@/lib/public-view';
+import { filterMaintenances } from '@/lib/maintenance';
+import { MaintenanceCard } from './maintenance-card';
+
+interface MaintenanceAlertsProps {
+  maintenances: Maintenance[];
+  monitors: PublicMonitor[];
+  nowMs: number;
+}
+
+export function MaintenanceAlerts({ maintenances, monitors, nowMs }: MaintenanceAlertsProps) {
+  const monitorNamesById = new Map(monitors.map((m) => [m.id, m.name]));
+  const { active: activeMaintenances, upcoming: upcomingMaintenances } = filterMaintenances(
+    maintenances,
+    { nowMs },
+  );
+
+  if (activeMaintenances.length === 0 && upcomingMaintenances.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {activeMaintenances.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+            Active maintenance windows
+          </h3>
+          {activeMaintenances.map((m) => (
+            <MaintenanceCard
+              key={`active-${m.id}`}
+              maintenance={m}
+              monitorNames={monitorNamesById}
+              nowMs={nowMs}
+              variant="active"
+            />
+          ))}
+        </div>
+      )}
+
+      {upcomingMaintenances.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+            <IconCalendar className="size-4 text-status-maintenance-text" />
+            Upcoming maintenance windows
+          </h3>
+          {upcomingMaintenances.map((m) => (
+            <MaintenanceCard
+              key={`upcoming-${m.id}`}
+              maintenance={m}
+              monitorNames={monitorNamesById}
+              nowMs={nowMs}
+              variant="upcoming"
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

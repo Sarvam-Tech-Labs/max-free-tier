@@ -1,0 +1,218 @@
+import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { IconWorld, IconClockPlay } from '@tabler/icons-react';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { MonitorRow } from '@/components/monitor-card';
+import type { Maintenance, StatusView, PageConfigGroup } from '@flarewatch/shared';
+import type { AdminMonitor } from '@/lib/public-view';
+import { setUiPrefsServerFn, type UiPrefs } from '@/lib/ui-prefs-server';
+import { qk } from '@/lib/query/keys';
+
+export type MonitorKindFilter = 'web' | 'jobs';
+
+/** Key the default heartbeat group uses in collapsedGroups; never a config group name. */
+const SCHEDULED_JOBS_GROUP_KEY = '__scheduled_jobs__';
+
+interface MonitorGroup {
+  key: string;
+  name: string;
+  monitors: AdminMonitor[];
+}
+
+interface MonitorListProps {
+  monitors: AdminMonitor[];
+  state: StatusView;
+  maintenances: Maintenance[];
+  groups?: PageConfigGroup;
+  uiPrefs?: UiPrefs;
+  operator?: boolean;
+  kind?: MonitorKindFilter;
+  onKindChange?: (kind: MonitorKindFilter | undefined) => void;
+}
+
+function isHeartbeat(monitor: AdminMonitor) {
+  return monitor.method === 'HEARTBEAT';
+}
+
+function groupMonitors(
+  monitors: AdminMonitor[],
+  groups: PageConfigGroup | undefined,
+  kind: MonitorKindFilter | undefined,
+  filterActive: boolean,
+  hasBothKinds: boolean,
+) {
+  const matchesKind = (monitor: AdminMonitor) =>
+    !filterActive || !kind || (kind === 'jobs') === isHeartbeat(monitor);
+
+  const activeGroups: MonitorGroup[] = [];
+  const monitorById = new Map(monitors.map((monitor) => [monitor.id, monitor]));
+  const groupedMonitorIds = new Set<string>();
+
+  if (groups) {
+    for (const [name, ids] of Object.entries(groups)) {
+      const groupMonitors = ids
+        .map((id) => monitorById.get(id))
+        .filter(
+          (monitor): monitor is AdminMonitor => monitor !== undefined && matchesKind(monitor),
+        );
+
+      for (const id of ids) groupedMonitorIds.add(id);
+
+      if (groupMonitors.length > 0) {
+        activeGroups.push({ key: name, name, monitors: groupMonitors });
+      }
+    }
+  }
+
+  const ungroupedMonitors = monitors.filter(
+    (monitor) => !groupedMonitorIds.has(monitor.id) && matchesKind(monitor),
+  );
+
+  if (hasBothKinds) {
+    const scheduledJobs = ungroupedMonitors.filter(isHeartbeat);
+    if (scheduledJobs.length > 0) {
+      activeGroups.push({
+        key: SCHEDULED_JOBS_GROUP_KEY,
+        name: 'Scheduled jobs',
+        monitors: scheduledJobs,
+      });
+    }
+  }
+
+  const flatMonitors = hasBothKinds
+    ? ungroupedMonitors.filter((monitor) => !isHeartbeat(monitor))
+    : ungroupedMonitors;
+
+  return { activeGroups, flatMonitors };
+}
+
+export function MonitorList({
+  monitors,
+  state,
+  maintenances,
+  groups,
+  uiPrefs,
+  operator,
+  kind,
+  onKindChange,
+}: MonitorListProps) {
+  const queryClient = useQueryClient();
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>(
+    () => uiPrefs?.collapsedGroups ?? [],
+  );
+
+  const isInitialMount = useRef(true);
+
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    const next = { collapsedGroups };
+    queryClient.setQueryData(qk.uiPrefs, next);
+    void setUiPrefsServerFn({ data: next });
+  }, [collapsedGroups, queryClient]);
+
+  function renderRows(rows: AdminMonitor[]) {
+    return (
+      <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+        {rows.map((monitor) => (
+          <MonitorRow
+            key={monitor.id}
+            monitor={monitor}
+            state={state}
+            maintenances={maintenances}
+            operator={operator}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  const hasHeartbeats = monitors.some((monitor) => monitor.method === 'HEARTBEAT');
+  const hasPulls = monitors.some((monitor) => monitor.method !== 'HEARTBEAT');
+  const hasBothKinds = hasHeartbeats && hasPulls;
+  const filterActive = Boolean(onKindChange && hasBothKinds);
+
+  const { activeGroups, flatMonitors } = groupMonitors(
+    monitors,
+    groups,
+    kind,
+    filterActive,
+    hasBothKinds,
+  );
+
+  const activeGroupKeys = activeGroups.map((group) => group.key);
+  const collapsedGroupKeys = new Set(collapsedGroups);
+  const openGroupKeys = activeGroupKeys.filter((key) => !collapsedGroupKeys.has(key));
+
+  return (
+    <div className="space-y-3">
+      {filterActive && (
+        <ToggleGroup
+          variant="outline"
+          size="sm"
+          value={[kind ?? 'all']}
+          onValueChange={(value) => {
+            const selected = Array.isArray(value) ? value[0] : value;
+            onKindChange?.(selected === 'web' || selected === 'jobs' ? selected : undefined);
+          }}
+          aria-label="Filter monitors by kind"
+        >
+          <ToggleGroupItem value="all">All</ToggleGroupItem>
+          <ToggleGroupItem value="web">
+            <IconWorld aria-hidden="true" />
+            Websites
+          </ToggleGroupItem>
+          <ToggleGroupItem value="jobs">
+            <IconClockPlay aria-hidden="true" />
+            Scheduled jobs
+          </ToggleGroupItem>
+        </ToggleGroup>
+      )}
+
+      {activeGroups.length === 0 ? (
+        renderRows(flatMonitors)
+      ) : (
+        <>
+          {flatMonitors.length > 0 && renderRows(flatMonitors)}
+
+          <Accordion
+            multiple
+            value={openGroupKeys}
+            onValueChange={(value) => {
+              const open = new Set(value.filter((v): v is string => typeof v === 'string'));
+              const nextCollapsed = activeGroupKeys.filter((key) => !open.has(key));
+              setCollapsedGroups(nextCollapsed);
+            }}
+            variant="card"
+          >
+            {activeGroups.map(({ key, name, monitors: groupMonitors }) => {
+              const count = groupMonitors.length;
+              const countLabel = groupMonitors.every(isHeartbeat)
+                ? `${count} ${count === 1 ? 'job' : 'jobs'}`
+                : `${count} ${count === 1 ? 'monitor' : 'monitors'}`;
+              return (
+                <AccordionItem key={key} value={key}>
+                  <AccordionTrigger aria-label={`Toggle ${name} (${countLabel})`}>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{name}</span>
+                      <span className="text-sm text-muted-foreground">({countLabel})</span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent>{renderRows(groupMonitors)}</AccordionContent>
+                </AccordionItem>
+              );
+            })}
+          </Accordion>
+        </>
+      )}
+    </div>
+  );
+}

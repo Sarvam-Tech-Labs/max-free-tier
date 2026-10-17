@@ -1,0 +1,277 @@
+name: CI and Deploy
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f #v1.21.1
+        with:
+          node-version: '24'
+          cache: true
+          run-install: true
+
+      # A key per run, because GitHub never overwrites a saved key. Vite+ fingerprints the inputs.
+      - name: Restore task cache
+        id: task-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules/.vite/task-cache
+          key: vite-task-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vite-task-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check formatting, types, and lint
+        timeout-minutes: 5
+        run: vp check
+
+      - name: Run unit tests
+        timeout-minutes: 5
+        run: vp run test
+
+      - name: Save task cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules/.vite/task-cache
+          key: ${{ steps.task-cache.outputs.cache-primary-key }}
+
+      - name: Check React code
+        timeout-minutes: 5
+        run: vp run --filter status-page doctor
+
+      - name: Restore browser cache
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml', 'apps/status-page/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Chromium for browser tests
+        if: ${{ github.event_name == 'pull_request' }}
+        timeout-minutes: 10
+        run: vp exec --filter status-page -- playwright install --only-shell chromium
+
+      - name: Run status page browser tests
+        if: ${{ github.event_name == 'pull_request' }}
+        timeout-minutes: 10
+        run: vp exec --filter status-page -- playwright test
+
+      - name: Upload browser test artifacts
+        if: ${{ github.event_name == 'pull_request' && failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ github.sha }}
+          path: |
+            apps/status-page/playwright-report
+            apps/status-page/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Build worker for pull requests
+        if: ${{ github.event_name == 'pull_request' && success() }}
+        timeout-minutes: 5
+        run: vp run --filter worker build
+
+  build-and-deploy:
+    name: Deploy to Cloudflare
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    needs: quality
+    # Only this job gets the token: the quality job installs and runs third-party code.
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        env:
+          HEARTBEAT_SECRET: ${{ secrets.HEARTBEAT_SECRET }}
+          FLAREWATCH_AUTH_SECRET: ${{ secrets.FLAREWATCH_AUTH_SECRET }}
+        run: |
+          # A ping URL, or the cookie of any sign-in someone starts, lets them guess a short secret offline.
+          if [ -n "${HEARTBEAT_SECRET}" ] && [ ${#HEARTBEAT_SECRET} -lt 32 ]; then
+            echo "::warning title=Short HEARTBEAT_SECRET::HEARTBEAT_SECRET has fewer than 32 characters. Replace it with the output of 'openssl rand -base64 32', then update your ping URLs."
+          fi
+          if [ -n "${FLAREWATCH_AUTH_SECRET}" ] && [ ${#FLAREWATCH_AUTH_SECRET} -lt 32 ]; then
+            echo "::warning title=Short FLAREWATCH_AUTH_SECRET::FLAREWATCH_AUTH_SECRET has fewer than 32 characters. Replace it with the output of 'openssl rand -base64 32'. Sign-ins in progress then fail once."
+          fi
+
+          missing=()
+
+          [ -z "${CLOUDFLARE_ACCOUNT_ID}" ] && missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ -z "${CLOUDFLARE_API_TOKEN}" ] && missing+=(CLOUDFLARE_API_TOKEN)
+
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "Missing required secrets:"
+            for key in "${missing[@]}"; do
+              echo "- $key"
+            done
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f #v1.21.1
+        with:
+          node-version: '24'
+          cache: true
+          run-install: true
+
+      - name: Ensure KV namespace exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v jq >/dev/null; then
+            echo "jq is required to parse wrangler KV namespace output"
+            exit 1
+          fi
+
+          KV_NAMESPACE_TITLE="flarewatch-state"
+
+          find_namespace_id() {
+            vp exec --filter worker -- wrangler kv namespace list \
+              | jq -r --arg title "$KV_NAMESPACE_TITLE" 'map(select(.title == $title)) | .[0].id // empty'
+          }
+
+          KV_NAMESPACE_ID="$(find_namespace_id)"
+          if [ -z "$KV_NAMESPACE_ID" ]; then
+            set +e
+            CREATE_OUTPUT="$(vp exec --filter worker -- wrangler kv namespace create "$KV_NAMESPACE_TITLE" 2>&1)"
+            CREATE_EXIT="$?"
+            set -e
+
+            if [ "$CREATE_EXIT" -ne 0 ] && ! printf '%s\n' "$CREATE_OUTPUT" | grep -qi 'already exists'; then
+              printf '%s\n' "$CREATE_OUTPUT"
+              exit "$CREATE_EXIT"
+            fi
+
+            printf '%s\n' "$CREATE_OUTPUT"
+            KV_NAMESPACE_ID="$(find_namespace_id)"
+          fi
+
+          if [ -z "$KV_NAMESPACE_ID" ]; then
+            echo "Unable to resolve KV namespace id for $KV_NAMESPACE_TITLE"
+            exit 1
+          fi
+
+          echo "KV_NAMESPACE_ID=$KV_NAMESPACE_ID" >> "$GITHUB_ENV"
+          echo "KV namespace: $KV_NAMESPACE_TITLE ($KV_NAMESPACE_ID)"
+
+      - name: Inject KV namespace id
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PLACEHOLDER="__FLAREWATCH_STATE_KV_NAMESPACE_ID__"
+          sed -i "s/$PLACEHOLDER/$KV_NAMESPACE_ID/g" apps/status-page/wrangler.jsonc
+
+          if grep "$PLACEHOLDER" apps/status-page/wrangler.jsonc; then
+            echo "KV namespace placeholder was not fully replaced"
+            exit 1
+          fi
+
+      - name: Use the upstream demo config
+        if: ${{ github.repository == 'saminnet/flarewatch' }}
+        run: |
+          cp packages/config/src/demo/worker.ts packages/config/src/worker.ts
+          cp packages/config/src/demo/public.ts packages/config/src/public.ts
+
+      - name: Deploy with Wrangler
+        env:
+          FLAREWATCH_PROXY_TOKEN: ${{ secrets.FLAREWATCH_PROXY_TOKEN }}
+          FLAREWATCH_WEBHOOKS: ${{ secrets.FLAREWATCH_WEBHOOKS }}
+          FLAREWATCH_ADMIN_BASIC_AUTH: ${{ secrets.FLAREWATCH_ADMIN_BASIC_AUTH }}
+          FLAREWATCH_AUTH_SECRET: ${{ secrets.FLAREWATCH_AUTH_SECRET }}
+          FLAREWATCH_OIDC_SECRETS: ${{ secrets.FLAREWATCH_OIDC_SECRETS }}
+          HEARTBEAT_SECRET: ${{ secrets.HEARTBEAT_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          put_secret() {
+            local package="$1"
+            local config="$2"
+            local name="$3"
+            local value="$4"
+
+            if [ -z "$value" ]; then
+              echo "Skipping optional secret $name"
+              return 0
+            fi
+
+            printf '%s' "$value" | vp exec --filter "$package" -- wrangler secret put "$name" --config "$config"
+          }
+
+          echo "Deploying monitoring worker"
+          vp exec --filter worker -- wrangler deploy --config wrangler.toml
+          put_secret worker wrangler.toml FLAREWATCH_PROXY_TOKEN "$FLAREWATCH_PROXY_TOKEN"
+          put_secret worker wrangler.toml HEARTBEAT_SECRET "$HEARTBEAT_SECRET"
+          put_secret worker wrangler.toml FLAREWATCH_WEBHOOKS "$FLAREWATCH_WEBHOOKS"
+
+          echo "Building status page"
+          vp run --filter status-page build
+
+          echo "Deploying status page"
+          STATUS_DEPLOY_LOG="$RUNNER_TEMP/status-page-deploy.log"
+          vp exec --filter status-page -- wrangler deploy --config dist/server/wrangler.json 2>&1 | tee "$STATUS_DEPLOY_LOG"
+          STATUS_OUTPUT="$(cat "$STATUS_DEPLOY_LOG")"
+          put_secret status-page dist/server/wrangler.json FLAREWATCH_ADMIN_BASIC_AUTH "$FLAREWATCH_ADMIN_BASIC_AUTH"
+          put_secret status-page dist/server/wrangler.json FLAREWATCH_AUTH_SECRET "$FLAREWATCH_AUTH_SECRET"
+          put_secret status-page dist/server/wrangler.json FLAREWATCH_OIDC_SECRETS "$FLAREWATCH_OIDC_SECRETS"
+
+          STATUS_PAGE_URL="$(printf '%s\n' "$STATUS_OUTPUT" | grep -Eo 'https://[^[:space:]]+\.workers\.dev[^[:space:]]*' | tail -n 1 || true)"
+          if [ -z "$STATUS_PAGE_URL" ]; then
+            STATUS_PAGE_URL="$(printf '%s\n' "$STATUS_OUTPUT" | grep -Eo 'https://[^[:space:]]+' | tail -n 1 || true)"
+          fi
+          if [ -z "$STATUS_PAGE_URL" ]; then
+            WORKERS_SUBDOMAIN="$(
+              curl -fsS \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+                2>/dev/null | jq -r '.result.subdomain // empty' || true
+            )"
+            if [ -n "$WORKERS_SUBDOMAIN" ]; then
+              STATUS_PAGE_URL="https://flarewatch.${WORKERS_SUBDOMAIN}.workers.dev"
+            fi
+          fi
+          if [ -z "$STATUS_PAGE_URL" ]; then
+            STATUS_PAGE_URL="https://flarewatch.<your-workers-dev-subdomain>.workers.dev"
+          fi
+
+          {
+            echo "### FlareWatch deployment"
+            echo
+            echo "- Monitor Worker: \`flarewatch-worker\`"
+            echo "- Status page Worker: \`flarewatch\`"
+            echo "- KV namespace: \`flarewatch-state\` (\`$KV_NAMESPACE_ID\`)"
+            echo "- Status page URL: $STATUS_PAGE_URL"
+          } >> "$GITHUB_STEP_SUMMARY"

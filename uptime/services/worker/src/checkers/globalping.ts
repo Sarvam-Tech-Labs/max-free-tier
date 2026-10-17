@@ -1,0 +1,329 @@
+import {
+  type MonitorTarget,
+  type RunBudget,
+  type CheckResultWithLocation,
+  type SSLCertificateInfo,
+  success,
+  failure,
+  fetchWithTimeout,
+  type Fetcher,
+  validateHttpResponse,
+  parseTcpTarget,
+  DEFAULT_HTTP_TIMEOUT,
+  createLogger,
+  getErrorMessage,
+  readJsonUpTo,
+  MAX_BODY_BYTES,
+} from '@flarewatch/shared';
+import * as z from 'zod/mini';
+
+const log = createLogger('GlobalPing');
+
+const GLOBALPING_API = 'https://api.globalping.io/v1/measurements';
+const API_TIMEOUT = 5000;
+const POLL_INTERVAL = 1000;
+/** One request creates a measurement and one polls it; the run budget pays for these up front. */
+export const PREPAID_REQUESTS = 2;
+
+interface GlobalPingConfig {
+  token: string;
+  magic?: string;
+  ipVersion: number;
+}
+
+const measurementResultSchema = z.object({
+  status: z.string(),
+  results: z.array(
+    z.object({
+      probe: z.object({ country: z.string(), city: z.string() }),
+      result: z.object({
+        status: z.string(),
+        rawOutput: z.optional(z.string()),
+        statusCode: z.optional(z.number()),
+        rawBody: z.optional(z.string()),
+        timings: z.optional(z.object({ total: z.number() })),
+        stats: z.optional(z.object({ avg: z.number() })),
+        tls: z.optional(
+          z.object({
+            authorized: z.boolean(),
+            error: z.optional(z.string()),
+            certificate: z.optional(
+              z.object({
+                expiresAt: z.optional(z.string()),
+                issuer: z.optional(z.object({ commonName: z.optional(z.string()) })),
+                subject: z.optional(z.object({ commonName: z.optional(z.string()) })),
+              }),
+            ),
+          }),
+        ),
+      }),
+    }),
+  ),
+});
+
+type MeasurementResult = z.infer<typeof measurementResultSchema>;
+
+function parseProxyUrl(proxyUrl: string): GlobalPingConfig {
+  const url = new URL(proxyUrl);
+  const magic = url.searchParams.get('magic');
+  const config: GlobalPingConfig = {
+    token: url.hostname,
+    ipVersion: parseInt(url.searchParams.get('ipVersion') ?? '4', 10),
+  };
+  if (magic) {
+    config.magic = magic;
+  }
+  return config;
+}
+
+function buildTcpRequest(target: MonitorTarget, config: GlobalPingConfig) {
+  const { hostname, port } = parseTcpTarget(target.target);
+
+  return {
+    type: 'ping',
+    target: hostname,
+    locations: config.magic ? [{ magic: config.magic }] : undefined,
+    measurementOptions: {
+      port,
+      packets: 1,
+      protocol: target.pingProtocol ?? 'tcp',
+      ipVersion: config.ipVersion,
+    },
+  };
+}
+
+function buildHttpRequest(target: MonitorTarget, config: GlobalPingConfig) {
+  const targetUrl = new URL(target.target);
+
+  return {
+    type: 'http',
+    target: targetUrl.hostname,
+    locations: config.magic ? [{ magic: config.magic }] : undefined,
+    measurementOptions: {
+      request: {
+        method: target.method,
+        path: targetUrl.pathname,
+        query: targetUrl.search || undefined,
+        headers: {
+          Host: targetUrl.hostname,
+          ...Object.fromEntries(
+            Object.entries(target.headers ?? {}).map(([k, v]) => [k, String(v)]),
+          ),
+        },
+      },
+      port:
+        targetUrl.port !== ''
+          ? parseInt(targetUrl.port, 10)
+          : targetUrl.protocol === 'http:'
+            ? 80
+            : 443,
+      protocol: targetUrl.protocol.replace(':', ''),
+      ipVersion: config.ipVersion,
+    },
+  };
+}
+
+function calculateCertExpiry(expiresAt: string) {
+  const expiryDate = Math.floor(new Date(expiresAt).getTime() / 1000);
+  const now = Math.floor(Date.now() / 1000);
+  const daysUntilExpiry = Math.floor((expiryDate - now) / 86400);
+  return { expiryDate, daysUntilExpiry };
+}
+
+async function validateHttpResult(
+  target: MonitorTarget,
+  result: MeasurementResult['results'][0]['result'],
+) {
+  let ssl: SSLCertificateInfo | undefined;
+
+  let error = await validateHttpResponse(target, {
+    status: result.statusCode ?? 0,
+    body: result.rawBody ?? '',
+  });
+
+  const tls = result.tls;
+  if (tls && target.target.toLowerCase().startsWith('https')) {
+    if (!error && !tls.authorized && !target.sslIgnoreSelfSigned) {
+      error = `TLS error: ${tls.error ?? 'Certificate not trusted'}`;
+    }
+
+    if (tls.certificate?.expiresAt) {
+      const { expiryDate, daysUntilExpiry } = calculateCertExpiry(tls.certificate.expiresAt);
+      if (!Number.isFinite(expiryDate)) {
+        if (!error && target.sslCheckEnabled) error = 'Invalid certificate expiry date';
+      } else {
+        ssl = { expiryDate, daysUntilExpiry };
+        if (tls.certificate.issuer?.commonName) {
+          ssl.issuer = tls.certificate.issuer.commonName;
+        }
+        if (tls.certificate.subject?.commonName) {
+          ssl.subject = tls.certificate.subject.commonName;
+        }
+
+        if (!error && target.sslCheckEnabled) {
+          if (expiryDate <= Math.floor(Date.now() / 1000)) {
+            error = 'Certificate has expired';
+          }
+        }
+      }
+    }
+  }
+
+  if (ssl) {
+    return { error, ssl };
+  }
+  return { error };
+}
+
+async function createMeasurement(
+  request: ReturnType<typeof buildHttpRequest> | ReturnType<typeof buildTcpRequest>,
+  token: string,
+  fetcher: Fetcher,
+): Promise<string> {
+  const response = await fetcher(GLOBALPING_API, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(request),
+    timeout: API_TIMEOUT,
+  });
+
+  if (response.status !== 202) {
+    const errorBody = z
+      .object({ error: z.optional(z.object({ message: z.string() })) })
+      .safeParse(await readJsonUpTo(response, MAX_BODY_BYTES).catch(() => undefined));
+    throw new Error(
+      (errorBody.success ? errorBody.data.error?.message : undefined) ??
+        `API error: ${response.status}`,
+    );
+  }
+
+  const created = z
+    .object({ id: z.string() })
+    .safeParse(await readJsonUpTo(response, MAX_BODY_BYTES));
+  if (!created.success) {
+    throw new Error('invalid measurement creation response');
+  }
+  return created.data.id;
+}
+
+async function pollMeasurement(
+  measurementId: string,
+  timeoutMs: number,
+  fetcher: Fetcher,
+): Promise<MeasurementResult> {
+  const pollStart = Date.now();
+
+  while (true) {
+    if (Date.now() - pollStart > timeoutMs) {
+      throw new Error('GlobalPing measurement timeout');
+    }
+
+    const response = await fetcher(`${GLOBALPING_API}/${measurementId}`, {
+      timeout: API_TIMEOUT,
+    });
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
+    const parsed = measurementResultSchema.safeParse(await readJsonUpTo(response, MAX_BODY_BYTES));
+    if (!parsed.success) {
+      throw new Error('invalid measurement payload');
+    }
+    const result = parsed.data;
+
+    if (result.status !== 'in-progress') {
+      return result;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  }
+}
+
+async function parseMeasurementResult(
+  target: MonitorTarget,
+  measurement: MeasurementResult,
+): Promise<CheckResultWithLocation> {
+  const probeResult = measurement.results[0];
+  if (!probeResult) {
+    throw new Error('No probe result returned');
+  }
+
+  if (measurement.status !== 'finished' || probeResult.result.status !== 'finished') {
+    throw new Error(
+      `Measurement failed: ${probeResult.result.rawOutput?.slice(0, 100) ?? 'Unknown error'}`,
+    );
+  }
+
+  const location = `${probeResult.probe.country}/${probeResult.probe.city}`;
+
+  if (target.method === 'TCP_PING') {
+    const latency = Math.round(probeResult.result.stats?.avg ?? 0);
+    log.info('TCP ping', { name: target.name, latency, location });
+    return { location, result: success(latency) };
+  }
+
+  const latency = Math.round(probeResult.result.timings?.total ?? 0);
+  const { error, ssl } = await validateHttpResult(target, probeResult.result);
+
+  if (error) {
+    log.info('Check failed', { name: target.name, error, location });
+    return { location, result: failure(error, latency) };
+  }
+
+  log.info('OK', { name: target.name, latency, location });
+  return { location, result: success(latency, ssl) };
+}
+
+export class GlobalPingChecker {
+  constructor(private readonly fetcher: Fetcher = fetchWithTimeout) {}
+
+  /**
+   * `url` is a `globalping://` location; the caller checks the monitor's method and body fit it.
+   * Each request past the prepaid ones spends one of `budget.subrequests`, and none starts after
+   * `budget.deadline`, so polling stops with the run even when the caller stopped waiting.
+   */
+  async check(
+    target: MonitorTarget,
+    url: string,
+    budget: RunBudget,
+  ): Promise<CheckResultWithLocation> {
+    let requests = 0;
+    const fetcher: Fetcher = async (input, options = {}) => {
+      const remaining = budget.deadline - Date.now();
+      if (remaining <= 0) throw new Error('the check run ended');
+      requests += 1;
+      if (requests > PREPAID_REQUESTS) {
+        if (budget.subrequests < 1) throw new Error('no subrequests left in this check run');
+        budget.subrequests -= 1;
+      }
+      const timeout = Math.min(options.timeout ?? API_TIMEOUT, remaining);
+      return this.fetcher(input, { ...options, timeout, redirect: 'manual' });
+    };
+    try {
+      const config = parseProxyUrl(url);
+
+      const measurementRequest =
+        target.method === 'TCP_PING'
+          ? buildTcpRequest(target, config)
+          : buildHttpRequest(target, config);
+
+      log.info('Creating measurement', { name: target.name });
+      const measurementId = await createMeasurement(measurementRequest, config.token, fetcher);
+      const pollTimeout = (target.timeout ?? DEFAULT_HTTP_TIMEOUT) + 2000;
+      const measurement = await pollMeasurement(measurementId, pollTimeout, fetcher);
+      return await parseMeasurementResult(target, measurement);
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      const isTimeout = errorMessage.toLowerCase().includes('timeout');
+
+      log.error('Error', { name: target.name, error: errorMessage });
+
+      return {
+        location: 'ERROR',
+        result: failure(`GlobalPing: ${errorMessage}`, isTimeout ? target.timeout : undefined),
+      };
+    }
+  }
+}
+
+export const globalPingChecker = new GlobalPingChecker();
