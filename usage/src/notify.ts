@@ -12,11 +12,14 @@ export function formatMessage(date: string, spikes: readonly Spike[]): string {
 }
 
 export interface NotifyResult {
-  target: "discord" | "slack";
+  target: "discord" | "slack" | "telegram";
   ok: boolean;
   status?: number;
   error?: string;
 }
+
+/** Telegram Bot API base. The bot token goes in the path, so the full URL is never logged or returned. */
+export const TELEGRAM_API = "https://api.telegram.org";
 
 async function post(
   target: NotifyResult["target"],
@@ -36,9 +39,12 @@ async function post(
   }
 }
 
-/** POST `text` to every configured webhook. No webhook configured → []. */
+/** POST `text` to every configured channel. Nothing configured → []. Telegram needs both the bot token and the chat id. */
 export async function notify(
-  env: Pick<Env, "DISCORD_WEBHOOK_URL" | "SLACK_WEBHOOK_URL">,
+  env: Pick<
+    Env,
+    "DISCORD_WEBHOOK_URL" | "SLACK_WEBHOOK_URL" | "TELEGRAM_BOT_TOKEN" | "TELEGRAM_CHAT_ID"
+  >,
   text: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<NotifyResult[]> {
@@ -48,6 +54,16 @@ export async function notify(
   }
   if (env.SLACK_WEBHOOK_URL) {
     jobs.push(post("slack", env.SLACK_WEBHOOK_URL, { text }, fetchImpl));
+  }
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+    jobs.push(
+      post(
+        "telegram",
+        `${TELEGRAM_API}/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+        { chat_id: env.TELEGRAM_CHAT_ID, text, disable_web_page_preview: true },
+        fetchImpl,
+      ),
+    );
   }
   return Promise.all(jobs);
 }

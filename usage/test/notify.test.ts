@@ -81,3 +81,37 @@ describe("notify (three paths)", () => {
     ).toEqual([{ target: "slack", ok: false, error: "string-error" }]);
   });
 });
+
+describe("notify → Telegram", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts {chat_id, text} to the Bot API and never returns the token-bearing URL", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, body: JSON.parse(String(init.body)) });
+        return Response.json({ ok: true });
+      }),
+    );
+    const out = await notify({ TELEGRAM_BOT_TOKEN: "123:SECRET", TELEGRAM_CHAT_ID: "-1001" }, "msg");
+    expect(out).toEqual([{ target: "telegram", ok: true, status: 200 }]);
+    expect(calls[0]?.url).toBe("https://api.telegram.org/bot123:SECRET/sendMessage");
+    expect(calls[0]?.body).toEqual({ chat_id: "-1001", text: "msg", disable_web_page_preview: true });
+    expect(JSON.stringify(out)).not.toContain("SECRET");
+  });
+
+  it("needs both the token and the chat id", async () => {
+    const f = vi.fn();
+    vi.stubGlobal("fetch", f);
+    expect(await notify({ TELEGRAM_BOT_TOKEN: "t" }, "x")).toEqual([]);
+    expect(await notify({ TELEGRAM_CHAT_ID: "c" }, "x")).toEqual([]);
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("a Telegram failure is returned, not thrown", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad", { status: 400 })));
+    const out = await notify({ TELEGRAM_BOT_TOKEN: "t", TELEGRAM_CHAT_ID: "c" }, "x");
+    expect(out).toEqual([{ target: "telegram", ok: false, status: 400 }]);
+  });
+});
