@@ -1,0 +1,16 @@
+max-free-tier
+Copyright (c) 2026 Sarvam Tech Labs — MIT License (see LICENSE).
+
+This repository includes third-party software, each under its own license:
+
+uptime/  FlareWatch — https://github.com/saminnet/flarewatch
+         Copyright (c) 2025 Samin Yousefnia — MIT License (see uptime/LICENSE)
+
+usage/   usage-guard-collector — https://github.com/HowardZlh/usage-guard-collector
+         Copyright (c) 2026 HowardZlh — MIT License (see usage/LICENSE)
+         Modifications (multi-account support, free-plan limit alerts, Telegram channel)
+         Copyright (c) 2026 Sarvam Tech Labs, under the same MIT License.
+
+At run time the free-tier terms watch installs (does not redistribute):
+         urlwatch — https://github.com/thp/urlwatch
+         Copyright (c) 2008-2024 Thomas Perl — BSD-3-Clause

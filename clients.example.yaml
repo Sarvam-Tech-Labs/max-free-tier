@@ -1,0 +1,52 @@
+# Example client registry. The REAL one is private: keep it in a separate private repo (repository variable
+# REGISTRY_REPO, e.g. your-org/max-free-tier-clients) — the deploy workflows check it out at run time and generate configs from it, so
+# client names, account ids and domains never land in this public repo.
+#
+# Validate this file:  node scripts/sync.mjs --registry clients.example.yaml --dry-run
+#
+# status: live = monitored and on alerts · unconfirmed = recorded so it is findable, not monitored · paused = keep the
+#         record, stop monitoring.
+# cloudflare.account_id: the client's own account (your team is a member). The usage collector reads every listed
+#         account with ONE Account Analytics: Read token.
+# domains: registrable domains; FlareWatch checks their registration (RDAP) daily and warns 30 days before expiry.
+# monitors: HTTP checks every minute. keyword = text the page must contain (catches "200 but broken");
+#         expect = accepted status codes (default [200]).
+# local: where the project lives on the team's machine (optional; used by the runbook in CLAUDE.md).
+# No secrets in a registry — tokens live in GitHub Actions secrets / Worker secrets.
+
+# Optional: names the status page and sets the time zone used in alert messages.
+org:
+  name: Acme Agency
+  url: https://acme-agency.example
+  timeZone: Asia/Kolkata
+
+clients:
+  - id: acme
+    name: Acme Books
+    status: live
+    platforms: [cloudflare-workers, cloudflare-pages, d1, r2, resend]
+    cloudflare:
+      account_id: 0123456789abcdef0123456789abcdef
+    github: [acme/acme-web]
+    local: acme-web
+    domains: [acme.example]
+    notes: Free tier only.
+    monitors:
+      - id: site
+        name: Website
+        url: https://acme.example
+        keyword: Acme
+      - id: api
+        name: API health
+        url: https://acme.example/api/health
+        keyword: '"ok":true'
+      - id: short
+        name: Short link
+        url: https://acme.example/go
+        expect: [200, 301]
+
+  - id: beta
+    name: Beta Foods
+    status: unconfirmed
+    platforms: [vercel, supabase]
+    github: [beta/beta-app]

@@ -1,0 +1,66 @@
+# Daily watch of the free-tier terms themselves (watch/urls.yaml), with urlwatch (https://github.com/thp/urlwatch).
+# Any added, changed or removed line on a watched pricing/limits page → a diff in your Telegram chat.
+# A page that moves or disappears shows up as an error. New entries in urls.yaml are recorded silently (no flood).
+# Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (without them the diff only appears in the run log).
+name: Free-tier terms watch
+on:
+  schedule:
+    - cron: "30 3 * * *" # 03:30 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: freetier-watch
+  cancel-in-progress: false
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet "urlwatch==2.29" lxml cssselect html2text
+      # urlwatch's snapshots. A key per run (GitHub never overwrites a key); restore the newest.
+      - name: Restore snapshots
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .urlwatch-cache.db
+          key: urlwatch-${{ github.run_id }}
+          restore-keys: urlwatch-
+      - name: Write urlwatch config
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          TG=false
+          [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] && TG=true
+          cat > "$RUNNER_TEMP/urlwatch.yaml" <<YAML
+          display:
+            new: false
+            error: true
+            unchanged: false
+            empty-diff: false
+          report:
+            text:
+              details: true
+              footer: false
+              minimal: false
+            stdout:
+              enabled: true
+              color: false
+            telegram:
+              enabled: $TG
+              bot_token: "$TELEGRAM_BOT_TOKEN"
+              chat_id: "$TELEGRAM_CHAT_ID"
+              monospace: true
+          YAML
+      - name: Check for changes
+        run: urlwatch --urls watch/urls.yaml --config "$RUNNER_TEMP/urlwatch.yaml" --cache .urlwatch-cache.db
+      - name: Save snapshots
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .urlwatch-cache.db
+          key: urlwatch-${{ github.run_id }}

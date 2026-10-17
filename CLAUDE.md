@@ -1,0 +1,42 @@
+# CLAUDE.md — max-free-tier
+
+Agency ops hub for client sites on free tiers. Read `README.md` first. This file is the working guide + runbook.
+
+## Ground rules
+- **This repo is public. Client data never goes in it.** The real registry lives in a private repo
+  (`vars.REGISTRY_REPO`); `clients.yaml` and generated configs are gitignored and CI fails if either is committed.
+  Locally, keep the private registry checked out next to this repo (`pnpm sync` reads `../<registry>/clients.yaml` —
+  adjust the path in `package.json`) and never commit after running it: `git checkout uptime/packages/config` resets.
+- **No secrets in git.** Tokens live in GitHub Actions secrets and Worker secrets.
+- **Reuse before building.** FlareWatch and usage-guard-collector are vendored `git subtree`s; urlwatch is installed.
+  Fix gaps upstream-first (`docs/UPSTREAM.md`); keep our own code to the registry, generator and glue.
+- Client Cloudflare accounts belong to the clients: read-only analytics access only.
+
+## "Something is wrong with <client>"
+1. **Find it** in the private registry: platforms, Cloudflare account, repos, `local:` folder. Read that project's docs.
+2. **Down or broken?** Status page / Telegram alert text (status code, missing keyword, SSL/domain warning).
+   Reproduce: `curl -sS -o /dev/null -w '%{http_code}' <url>`.
+3. **Free-tier limit?** Usage page or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
+   (`usage/src/limits.ts` has the cited numbers).
+4. **Logs:** Cloudflare → Workers & Pages → the Worker → Logs, or `npx wrangler tail` in the project.
+5. **Not on Cloudflare** (Vercel, Supabase, Firebase, Resend, GitHub Actions): that platform's dashboard/CLI.
+   Supabase free projects pause after a week of inactivity.
+
+## "The free tier changed" (Telegram diff from the daily terms watch)
+1. For Cloudflare the diff is the docs' Markdown source — find the commit in `cloudflare/cloudflare-docs` for context.
+2. If a number we rely on changed: update `usage/src/limits.ts` (`FREE_PLAN_LIMITS`, `LIMITS_AS_OF`) and its test.
+3. A new `<Render file="x" product="y"/>` line on a Cloudflare page = a new partial
+   (`src/content/partials/y/x.mdx`): add it to `watch/urls.yaml`.
+
+## Gotchas
+- FlareWatch pins pnpm v12; its auto-switch is broken on Windows → `npx -y pnpm@12.11.2 …` inside `uptime/`.
+  Install with `--ignore-scripts`: its `prepare` script (`vp config`) otherwise sets this repo's `core.hooksPath`
+  to `uptime/.vite-hooks/_` (upstream's lint hook, which assumes FlareWatch is the repo root) and blocks every commit.
+  Fix: `git config --unset core.hooksPath`.
+- FlareWatch's badge tests hard-code the demo monitor ids, so they fail with any real config (reported upstream).
+
+## Layout
+- `clients.example.yaml` — registry format. `scripts/sync.mjs` — generator (+ `sync.test.mjs`).
+- `uptime/` — FlareWatch. `usage/` — usage-guard-collector + our additions (`cd usage && pnpm test`).
+- `watch/urls.yaml` — free-tier terms watch list (urlwatch).
+- `.github/workflows/` — `ci.yml`, `uptime.yml`, `usage.yml` (deploys, gated on secrets), `freetier-watch.yml` (daily).

@@ -1,0 +1,18 @@
+{
+  "name": "max-free-tier",
+  "private": true,
+  "type": "module",
+  "description": "Agency ops hub for client sites on free tiers: one registry, uptime (FlareWatch), Cloudflare free-tier usage alerts (usage-guard-collector) and a daily watch of the free-tier terms (urlwatch).",
+  "scripts": {
+    "sync": "node scripts/sync.mjs --registry ../max-free-tier-clients/clients.yaml",
+    "sync:example": "node scripts/sync.mjs --registry clients.example.yaml --dry-run",
+    "test": "node --test \"scripts/*.test.mjs\""
+  },
+  "dependencies": {
+    "yaml": "^2.6.0"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "MIT"
+}

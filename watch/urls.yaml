@@ -1,0 +1,75 @@
+# Free-tier terms watch — run daily by .github/workflows/freetier-watch.yml with urlwatch (https://github.com/thp/urlwatch).
+# Any addition, change or deletion on these pages is posted to Telegram as a diff.
+#
+# Cloudflare: the docs are open source, so we watch the Markdown SOURCE (exact line diffs, no page chrome). The numbers
+# often live in "partials" that a page pulls in with <Render file="x" product="y"/> → src/content/partials/y/x.mdx, so
+# both the page and its pricing partials are listed. A NEW partial shows up as an added <Render> line on its page.
+# Other platforms publish HTML only: we watch the page's main content as text.
+#
+# After a change: check usage/src/limits.ts (FREE_PLAN_LIMITS) and clients' notes, then update and redeploy.
+---
+name: "Cloudflare · Workers pricing (free plan)"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/workers/platform/pricing.mdx"
+---
+name: "Cloudflare · Workers limits"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/workers/platform/limits.mdx"
+---
+name: "Cloudflare · D1 pricing (partial)"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/partials/workers/d1-pricing.mdx"
+---
+name: "Cloudflare · D1 limits"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/d1/platform/limits.mdx"
+---
+name: "Cloudflare · KV pricing (partial)"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/partials/workers/kv_pricing.mdx"
+---
+name: "Cloudflare · Queues pricing (partial)"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/partials/workers/queues_pricing.mdx"
+---
+name: "Cloudflare · Workers Logs pricing (partial)"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/partials/workers/workers_logs_pricing.mdx"
+---
+name: "Cloudflare · Durable Objects pricing"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/durable-objects/platform/pricing.mdx"
+---
+name: "Cloudflare · Durable Objects plans note (partial)"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/partials/durable-objects/do-plans-note.mdx"
+---
+name: "Cloudflare · R2 pricing"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/r2/pricing.mdx"
+---
+name: "Cloudflare · Workers AI pricing"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/workers-ai/platform/pricing.mdx"
+---
+name: "Cloudflare · Pages limits"
+url: "https://raw.githubusercontent.com/cloudflare/cloudflare-docs/production/src/content/docs/pages/platform/limits.mdx"
+---
+name: "Vercel · limits"
+url: "https://vercel.com/docs/limits"
+filter:
+  - css: main
+  - html2text
+---
+name: "Supabase · pricing"
+url: "https://supabase.com/pricing"
+filter:
+  - css: main
+  - html2text
+---
+name: "Resend · pricing"
+url: "https://resend.com/pricing"
+filter:
+  - css: main
+  - html2text
+---
+name: "Firebase · pricing"
+url: "https://firebase.google.com/pricing"
+filter:
+  - css: main
+  - html2text
+---
+name: "GitHub · Actions billing (free minutes)"
+url: "https://docs.github.com/en/billing/concepts/product-billing/github-actions"
+filter:
+  - css: main
+  - html2text
