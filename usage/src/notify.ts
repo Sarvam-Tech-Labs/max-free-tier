@@ -1,14 +1,42 @@
 /** Optional webhook notifications. Failures are returned, never thrown: a dead webhook must not stop the collect. */
 import type { Env } from "./env";
+import { formatLimitLine, type LimitStatus } from "./limits";
 import type { Spike } from "./spike";
 import { formatRatio } from "./spike";
 
+function spikeLine(s: Spike): string {
+  return `• ${s.metric}: ${s.today.toLocaleString("en-US")} today vs. 7-day median ${s.baseline.toLocaleString("en-US")} (${formatRatio(s.ratio)})`;
+}
+
 export function formatMessage(date: string, spikes: readonly Spike[]): string {
-  const lines = spikes.map(
-    (s) =>
-      `• ${s.metric}: ${s.today.toLocaleString("en-US")} today vs. 7-day median ${s.baseline.toLocaleString("en-US")} (${formatRatio(s.ratio)})`,
-  );
-  return `usage-guard-collector — ${spikes.length} spike${spikes.length === 1 ? "" : "s"} on ${date} (UTC)\n${lines.join("\n")}`;
+  return `usage-guard-collector — ${spikes.length} spike${spikes.length === 1 ? "" : "s"} on ${date} (UTC)\n${spikes.map(spikeLine).join("\n")}`;
+}
+
+/** One account's fresh alerts. `label` is set only when several accounts are watched. */
+export interface ReportSection {
+  label?: string;
+  spikes: readonly Spike[];
+  limits: readonly LimitStatus[];
+}
+
+/**
+ * The text of one run's notification. A single unlabelled spike-only section is exactly formatMessage(), so
+ * single-account deploys without limit alerts get the same message as before.
+ */
+export function formatReport(date: string, sections: readonly ReportSection[]): string {
+  const only = sections[0];
+  if (sections.length === 1 && only && !only.label && only.limits.length === 0) {
+    return formatMessage(date, only.spikes);
+  }
+  const n = sections.reduce((acc, s) => acc + s.spikes.length + s.limits.length, 0);
+  const body = sections
+    .map((s) =>
+      [s.label, ...s.limits.map(formatLimitLine), ...s.spikes.map(spikeLine)]
+        .filter(Boolean)
+        .join("\n"),
+    )
+    .join("\n\n");
+  return `usage-guard-collector — ${n} alert${n === 1 ? "" : "s"} on ${date} (UTC)\n${body}`;
 }
 
 export interface NotifyResult {

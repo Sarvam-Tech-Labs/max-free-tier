@@ -94,10 +94,17 @@ describe("notify → Telegram", () => {
         return Response.json({ ok: true });
       }),
     );
-    const out = await notify({ TELEGRAM_BOT_TOKEN: "123:SECRET", TELEGRAM_CHAT_ID: "-1001" }, "msg");
+    const out = await notify(
+      { TELEGRAM_BOT_TOKEN: "123:SECRET", TELEGRAM_CHAT_ID: "-1001" },
+      "msg",
+    );
     expect(out).toEqual([{ target: "telegram", ok: true, status: 200 }]);
     expect(calls[0]?.url).toBe("https://api.telegram.org/bot123:SECRET/sendMessage");
-    expect(calls[0]?.body).toEqual({ chat_id: "-1001", text: "msg", disable_web_page_preview: true });
+    expect(calls[0]?.body).toEqual({
+      chat_id: "-1001",
+      text: "msg",
+      disable_web_page_preview: true,
+    });
     expect(JSON.stringify(out)).not.toContain("SECRET");
   });
 
@@ -110,7 +117,10 @@ describe("notify → Telegram", () => {
   });
 
   it("a Telegram failure is returned, not thrown", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad", { status: 400 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("bad", { status: 400 })),
+    );
     const out = await notify({ TELEGRAM_BOT_TOKEN: "t", TELEGRAM_CHAT_ID: "c" }, "x");
     expect(out).toEqual([{ target: "telegram", ok: false, status: 400 }]);
   });
