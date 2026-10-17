@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "usage-guard-collector",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // Every 6 hours. Uses 1 of the 5 Cron Triggers on the Workers Free plan.
+  "triggers": { "crons": ["0 */6 * * *"] },
+  "d1_databases": [
+    {
+      "binding": "USAGE",
+      // Replace with the output of `wrangler d1 create usage-guard`.
+      // The Deploy to Cloudflare button creates the database and fills this in for you.
+      "database_name": "usage-guard",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    // Optional overrides for the spike thresholds, JSON object: {"d1.rows_read": 1000000}.
+    // Keys are metric names shown on the / page. Unset = defaults in src/spike.ts.
+    "THRESHOLDS_JSON": ""
+  }
+  // Secrets (wrangler secret put, or the Deploy button form): CF_API_TOKEN (Account Analytics: Read), CF_ACCOUNT_ID.
+  // Optional, add after deploy: DISCORD_WEBHOOK_URL, SLACK_WEBHOOK_URL. Kept out of .dev.vars.example
+  // so the Deploy button asks only for the two required secrets.
+}
