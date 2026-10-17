@@ -1,0 +1,27 @@
+{
+  "name": "@flarewatch/config",
+  "private": true,
+  "type": "module",
+  "main": "./src/public.ts",
+  "types": "./src/public.ts",
+  "exports": {
+    "./worker": "./src/worker.ts",
+    "./access": "./src/access.ts",
+    ".": "./src/public.ts",
+    "./demo/public": "./src/demo/public.ts",
+    "./demo/worker": "./src/demo/worker.ts",
+    "./access.example": "./src/access.example.ts",
+    "./public.example": "./src/public.example.ts",
+    "./worker.example": "./src/worker.example.ts"
+  },
+  "scripts": {
+    "compile": "vp check --no-fmt --no-lint"
+  },
+  "dependencies": {
+    "@flarewatch/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@flarewatch/ts-config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

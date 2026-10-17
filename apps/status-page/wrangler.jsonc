@@ -1,0 +1,71 @@
+/**
+ * Wrangler configuration for status page.
+ *
+ * Usage:
+ *   Local dev:  vp run dev-status-page
+ *   Deploy:     vp run --filter status-page deploy:wrangler
+ *
+ * The Cloudflare Vite plugin emits the deployable dist/server/wrangler.json from this file.
+ *
+ * For more details: https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flarewatch",
+  "compatibility_date": "2026-09-30",
+  // TanStack Start requires nodejs_compat for SSR (async_hooks, streams)
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+  "workers_dev": true,
+  // Example custom domain route:
+  // "routes": [{ "pattern": "status.example.com", "custom_domain": true }],
+  "observability": {
+    "enabled": true,
+  },
+  /**
+   * CI creates/adopts the flarewatch-state namespace and replaces this placeholder before build.
+   */
+  "kv_namespaces": [
+    {
+      "binding": "FLAREWATCH_STATE",
+      "id": "__FLAREWATCH_STATE_KV_NAMESPACE_ID__",
+    },
+  ],
+  "services": [
+    {
+      "binding": "MONITOR_WORKER",
+      "service": "flarewatch-worker",
+    },
+  ],
+  // About five sign-in attempts per minute per IP, counted per Cloudflare location.
+  "ratelimits": [
+    {
+      "name": "LOGIN_RATE_LIMIT",
+      "namespace_id": "1002",
+      "simple": { "limit": 5, "period": 60 },
+    },
+  ],
+  /**
+   * Smart Placement
+   * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
+   */
+  // "placement": {  "mode": "smart" }
+  /**
+   * Bindings
+   * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
+   * databases, object storage, AI inference, real-time communication and more.
+   * https://developers.cloudflare.com/workers/runtime-apis/bindings/
+   */
+  /**
+   * Environment Variables
+   * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
+   * Note: Use secrets to store sensitive data.
+   * https://developers.cloudflare.com/workers/configuration/secrets/
+   */
+  // "vars": {  "MY_VARIABLE": "production_value" }
+  /**
+   * Static Assets
+   * https://developers.cloudflare.com/workers/static-assets/binding/
+   */
+  // "assets": {  "directory": "./public/",  "binding": "ASSETS" }
+}

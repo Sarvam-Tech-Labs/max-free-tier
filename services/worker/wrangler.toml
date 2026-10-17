@@ -1,0 +1,36 @@
+# Wrangler configuration for monitoring worker.
+
+name = "flarewatch-worker"
+main = "src/index.ts"
+compatibility_date = "2026-09-30"
+compatibility_flags = []
+
+# The trigger and ping endpoints are only for the status page's service binding — never expose this worker publicly.
+workers_dev = false
+preview_urls = false
+
+# The hub stores monitor state in SQLite. Wrangler creates it on the first deploy.
+[[durable_objects.bindings]]
+name = "MONITOR_HUB"
+class_name = "MonitorHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MonitorHub"]
+
+[triggers]
+crons = ["* * * * *"]
+
+# Ping URL origin for /ping-url responses. Leave empty to build URLs from the
+# origin of the status page request that asked for them.
+[vars]
+PUBLIC_ORIGIN = ""
+
+# HEARTBEAT_SECRET is a Wrangler secret, not a var:
+#   wrangler secret put HEARTBEAT_SECRET
+# Rotating it invalidates every ping URL at once.
+
+[[ratelimits]]
+name = "HEARTBEAT_RATE_LIMIT"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }

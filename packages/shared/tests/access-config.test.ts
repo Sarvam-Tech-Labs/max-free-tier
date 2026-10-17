@@ -1,0 +1,102 @@
+import { describe, expect, it } from 'vite-plus/test';
+import { accessConfigIssues } from '../src/config';
+
+describe('accessConfigIssues', () => {
+  it.each(['github', 'oidc'])('rejects empty names and client IDs for %s providers', (type) => {
+    const provider = {
+      id: 'id',
+      name: 'ID',
+      type,
+      clientId: 'fw',
+      ...(type === 'oidc' && { issuer: 'https://id.example' }),
+    };
+    for (const field of ['name', 'clientId']) {
+      expect(accessConfigIssues({ providers: [{ ...provider, [field]: '' }] }, [])).not.toEqual([]);
+    }
+  });
+
+  it.each([
+    { members: ['everyone'] },
+    { members: 'me@example.com' },
+    { members: [1] },
+    { audiences: { acme: { members: ['everyone'], groups: ['Acme'] } } },
+    { audiences: { acme: { members: 'me@example.com', groups: ['Acme'] } } },
+    { audiences: { acme: { members: ['*@acme.example'], groups: 'Acme' } } },
+    { audiences: { acme: { members: ['*@acme.example'], groups: [1] } } },
+    { audiences: { acme: { groups: ['Acme'] } } },
+    { audiences: { acme: { members: ['*@acme.example'] } } },
+  ])('rejects malformed member or audience rules %j', (access) => {
+    expect(accessConfigIssues(access, ['Acme'])).not.toEqual([]);
+  });
+  it('accepts OIDC and GitHub providers with each kind of rule', () => {
+    expect(
+      accessConfigIssues(
+        {
+          providers: [
+            {
+              id: 'pocket-id',
+              name: 'Pocket ID',
+              issuer: 'https://id.example.com',
+              clientId: 'abc',
+            },
+            { id: 'github', name: 'GitHub', type: 'github', clientId: 'def' },
+          ],
+          operators: ['me@example.com', 'group:admins'],
+          members: ['*@example.com', 'github:octo-cat'],
+          audiences: { acme: { members: ['*@acme.example'], groups: ['Acme'] } },
+        },
+        ['Acme'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('names each problem by its path', () => {
+    expect(
+      accessConfigIssues(
+        {
+          providers: [{ id: 'bad id', name: 'X', issuer: 'ftp://id.example.com', clientId: 'a' }],
+          operators: ['everyone'],
+        },
+        [],
+      ),
+    ).toEqual([
+      'access.providers.0.id: provider id must match ^[A-Za-z0-9_-]{1,32}$',
+      'access.providers.0.issuer: issuer must be an https URL (http only on localhost)',
+      'access.operators.0: access rules are an email, *@domain, group:<name> or github:<login>',
+    ]);
+  });
+
+  it('takes a plain-http issuer only on this machine', () => {
+    const issues = (issuer: string) =>
+      accessConfigIssues({ providers: [{ id: 'id', name: 'ID', issuer, clientId: 'a' }] }, []);
+
+    expect(issues('http://127.0.0.1:3102')).toEqual([]);
+    expect(issues('http://localhost:9000')).toEqual([]);
+    expect(issues('http://id.example.com')).toEqual([
+      'access.providers.0.issuer: issuer must be an https URL (http only on localhost)',
+    ]);
+  });
+
+  it('rejects two providers with the same id, whatever the case', () => {
+    expect(
+      accessConfigIssues(
+        {
+          providers: [
+            { id: 'github', name: 'A', type: 'github', clientId: 'a' },
+            { id: 'GitHub', name: 'B', type: 'github', clientId: 'b' },
+          ],
+        },
+        [],
+      ),
+    ).toEqual(['access: provider ids must be unique']);
+  });
+
+  it('names an audience group the page does not have', () => {
+    expect(
+      accessConfigIssues(
+        { audiences: { acme: { members: ['*@acme.example'], groups: ['Acme', 'Acne'] } } },
+        ['Acme', 'APIs'],
+      ),
+    ).toEqual(['access.audiences.acme: no page group is named "Acne"']);
+  });
+});

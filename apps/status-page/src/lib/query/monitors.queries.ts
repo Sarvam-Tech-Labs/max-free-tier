@@ -1,0 +1,68 @@
+import {
+  queryOptions,
+  type QueryClient,
+  type QueryExecuteOptions,
+  type QueryKey,
+} from '@tanstack/react-query';
+import {
+  getMemberSnapshot,
+  getMonitorLatency,
+  getOperatorSnapshot,
+  getVisitorSnapshot,
+} from '@/lib/snapshots';
+import { getUiPrefsServerFn } from '@/lib/ui-prefs-server';
+import { getConfigServerFn } from '@/lib/config';
+import { getSessionServerFn } from '@/lib/session';
+import type { Viewer } from '@/lib/operator.server';
+import type { Snapshot } from '@/lib/public-view';
+import { qk } from './keys';
+import { QUERY_STALE_TIME } from '@/lib/constants';
+
+export const configQuery = () =>
+  queryOptions({
+    queryFn: () => getConfigServerFn(),
+    queryKey: qk.config,
+    staleTime: QUERY_STALE_TIME.MONITORS,
+  });
+
+const SNAPSHOTS = {
+  operator: { read: () => getOperatorSnapshot(), key: qk.operatorSnapshot },
+  member: { read: () => getMemberSnapshot(), key: qk.memberSnapshot },
+  visitor: { read: () => getVisitorSnapshot(), key: qk.visitorSnapshot },
+} satisfies Record<Viewer, { read: () => Promise<Snapshot>; key: readonly string[] }>;
+
+export const snapshotQuery = (audience: Viewer) =>
+  queryOptions({
+    queryFn: () => SNAPSHOTS[audience].read(),
+    queryKey: SNAPSHOTS[audience].key,
+    staleTime: QUERY_STALE_TIME.DEFAULT, // 30 seconds; the hub updates once a minute
+  });
+
+export const latencyQuery = (monitorId: string) =>
+  queryOptions({
+    queryFn: () => getMonitorLatency({ data: { id: monitorId } }),
+    queryKey: qk.latency(monitorId),
+    staleTime: QUERY_STALE_TIME.DEFAULT,
+  });
+
+export const sessionQuery = () =>
+  queryOptions({
+    queryFn: () => getSessionServerFn(),
+    queryKey: qk.session,
+    staleTime: Infinity, // Changes only on sign-in and sign-out, which reset it
+  });
+
+export const uiPrefsQuery = () =>
+  queryOptions({
+    queryFn: () => getUiPrefsServerFn(),
+    queryKey: qk.uiPrefs,
+    staleTime: Infinity, // Only changes via user action, not refetch
+  });
+
+/** For route loaders: cached data of any age, fetched only when the cache has none. */
+export function loadQuery<TQueryFnData, TError, TData, TQueryKey extends QueryKey>(
+  queryClient: QueryClient,
+  options: QueryExecuteOptions<TQueryFnData, TError, TData, TQueryFnData, TQueryKey>,
+): Promise<TData> {
+  return queryClient.query({ ...options, staleTime: 'static' });
+}

@@ -1,0 +1,271 @@
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import {
+  HEARTBEAT_RUN_HISTORY,
+  formatUtcShort,
+  type MonitorView,
+  type WorkerConfig,
+} from '@flarewatch/shared';
+import type { Env } from '../src/env';
+import { runChecks } from '../src/index';
+import { createNotifier } from '../src/notifications/webhook';
+import type { PingKind } from '../src/hub/heartbeat';
+import { createHub, hubNamespace } from './helpers/hub';
+import { createWorkerDeps } from './helpers/worker-deps';
+import { webhookCapture, type Delivered } from './helpers/webhook-delivery';
+import { createHeartbeat } from '@flarewatch/shared/testing/monitors';
+
+const workerConfigMock: WorkerConfig = { monitors: [] };
+
+const NOW = Date.parse('2025-01-15T12:00:00Z') / 1000;
+const heartbeat = createHeartbeat({ periodSeconds: 60, graceSeconds: 10 });
+
+function createHeartbeatJob() {
+  const { hub } = createHub();
+  return {
+    hub,
+    ping(kind: PingKind, at: number, message?: string): void {
+      hub.ping(heartbeat, kind, at, message);
+    },
+    monitor(): MonitorView | undefined {
+      return hub.view().monitors[heartbeat.id];
+    },
+  };
+}
+
+async function scheduledRun(env: Env): Promise<Delivered[]> {
+  const { delivered, fetchMock } = webhookCapture('hooks.example.com');
+  vi.stubGlobal('fetch', fetchMock);
+  await runChecks(env, {
+    ...createWorkerDeps(workerConfigMock),
+    createNotifier,
+  });
+  vi.unstubAllGlobals();
+  return delivered;
+}
+
+function setNow(timestamp: number): void {
+  vi.setSystemTime(new Date(timestamp * 1000));
+}
+
+async function runScheduled(job: ReturnType<typeof createHeartbeatJob>): Promise<string[]> {
+  const delivered = await scheduledRun({ MONITOR_HUB: hubNamespace(job.hub) });
+  return delivered.map(({ id, label }) => `${id} ${label}`);
+}
+
+describe('heartbeat scheduled checks', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setNow(NOW);
+    workerConfigMock.monitors = [heartbeat];
+    workerConfigMock.notification = {
+      webhook: { url: 'https://hooks.example.com', template: 'matrix' },
+      gracePeriod: 60,
+    };
+    delete workerConfigMock.callbacks;
+  });
+
+  it('opens once after the deadline and closes once after recovery', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW);
+
+    expect(await runScheduled(job)).toEqual([]);
+    expect(job.monitor()?.heartbeat?.status).toBe('up');
+
+    setNow(NOW + 71);
+    const sent = [await runScheduled(job)];
+    const downState = job.monitor();
+    expect(downState?.heartbeat?.status).toBe('down');
+    expect(downState?.incidents).toHaveLength(1);
+    expect(downState?.incidents?.[0]?.error).toEqual([
+      `No heartbeat since ${formatUtcShort(NOW)} (expected by ${formatUtcShort(NOW + 70)})`,
+    ]);
+
+    job.ping('success', NOW + 71);
+    sent.push(await runScheduled(job));
+    const recoveredState = job.monitor();
+    expect(recoveredState?.heartbeat?.status).toBe('up');
+    expect(recoveredState?.incidents?.[0]?.end).toBe(NOW + 71);
+    expect(sent).toEqual([['backup down'], ['backup up']]);
+  });
+
+  it('opens from a fail signal with its message and closes after success', async () => {
+    const job = createHeartbeatJob();
+    job.ping('fail', NOW, 'restic check failed');
+
+    expect(await runScheduled(job)).toEqual(['backup down']);
+    expect(job.monitor()?.incidents?.[0]?.error).toEqual(['Job reported failure']);
+
+    setNow(NOW + 1);
+    job.ping('success', NOW + 1);
+    expect(await runScheduled(job)).toEqual(['backup up']);
+
+    expect(job.monitor()?.incidents?.[0]?.end).toBe(NOW + 1);
+  });
+
+  it('stores pending without an incident, a start time or latency', async () => {
+    const job = createHeartbeatJob();
+
+    const delivered = await runScheduled(job);
+
+    const state = job.monitor();
+    expect(state?.heartbeat?.status).toBe('pending');
+    expect(state).toEqual({ status: 'pending', incidents: [], heartbeat: { status: 'pending' } });
+    expect(delivered).toEqual([]);
+  });
+
+  it('takes its status from each heartbeat phase', async () => {
+    const job = createHeartbeatJob();
+
+    await runScheduled(job);
+    expect(job.monitor()?.status).toBe('pending');
+
+    setNow(NOW + 1);
+    job.ping('success', NOW - 120);
+    job.ping('start', NOW - 5);
+    await runScheduled(job);
+    expect(job.monitor()?.status).toBe('running');
+
+    setNow(NOW + 2);
+    job.ping('success', NOW - 65);
+    await runScheduled(job);
+    expect(job.monitor()?.status).toBe('late');
+
+    setNow(NOW + 3);
+    job.ping('fail', NOW, 'boom');
+    await runScheduled(job);
+    expect(job.monitor()?.status).toBe('down');
+  });
+
+  it('stays down when the job restarts inside an open overdue incident', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW - 200);
+
+    await runScheduled(job);
+    expect(job.monitor()?.status).toBe('down');
+
+    setNow(NOW + 1);
+    job.ping('start', NOW - 5);
+    await runScheduled(job);
+    expect(job.monitor()).toMatchObject({ status: 'down', heartbeat: { status: 'running' } });
+  });
+
+  it('marks late without opening an incident', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW - 65);
+
+    const delivered = await runScheduled(job);
+
+    const state = job.monitor();
+    expect(state?.heartbeat?.status).toBe('late');
+    expect(state?.status).toBe('late');
+    expect(state?.incidents).toEqual([]);
+    expect(delivered).toEqual([]);
+  });
+
+  it('lets a start extend the deadline without producing success', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW - 120);
+    job.ping('start', NOW - 5);
+
+    await runScheduled(job);
+    const runningState = job.monitor();
+    expect(runningState?.heartbeat).toMatchObject({
+      status: 'running',
+      deadline: NOW + 5,
+    });
+    expect(runningState?.incidents).toEqual([]);
+    expect(runningState?.status).toBe('running');
+
+    setNow(NOW + 6);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.status).toBe('down');
+    expect(job.monitor()?.incidents).toHaveLength(1);
+  });
+
+  it('records one miss per skipped period across overdue ticks', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW);
+
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.misses).toBeUndefined();
+    expect(job.monitor()?.heartbeat?.runs).toEqual([{ at: NOW, outcome: 'ok' }]);
+
+    setNow(NOW + 71);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.misses).toEqual([NOW + 70]);
+
+    setNow(NOW + 75);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.misses).toEqual([NOW + 70]);
+
+    setNow(NOW + 131);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.misses).toEqual([NOW + 70, NOW + 130]);
+
+    setNow(NOW + 312);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.misses).toEqual([
+      NOW + 70,
+      NOW + 130,
+      NOW + 190,
+      NOW + 250,
+      NOW + 310,
+    ]);
+  });
+
+  it('keeps the newest window when the catch-up exceeds the cap', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW);
+
+    setNow(NOW + 70 + 100 * 60 + 1);
+    await runScheduled(job);
+    const misses = job.monitor()?.heartbeat?.misses;
+    expect(misses).toHaveLength(HEARTBEAT_RUN_HISTORY);
+    expect(misses?.[misses.length - 1]).toBe(NOW + 70 + 100 * 60);
+  });
+
+  it('saves the state when a full miss history rolls forward', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW);
+    setNow(NOW + 70 + (HEARTBEAT_RUN_HISTORY - 1) * 60 + 1);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat?.misses).toHaveLength(HEARTBEAT_RUN_HISTORY);
+
+    setNow(NOW + 70 + HEARTBEAT_RUN_HISTORY * 60 + 1);
+    await runScheduled(job);
+    const state = job.monitor();
+    expect(job.hub.view().lastUpdate).toBe(NOW + 70 + HEARTBEAT_RUN_HISTORY * 60 + 1);
+    expect(state?.heartbeat?.misses?.slice(-1)[0]).toBe(NOW + 70 + HEARTBEAT_RUN_HISTORY * 60);
+  });
+
+  it('saves state when misses grow without a status change', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW);
+
+    setNow(NOW + 71);
+    await runScheduled(job);
+    expect(job.monitor()?.heartbeat).toMatchObject({
+      status: 'down',
+      misses: [NOW + 70],
+    });
+
+    setNow(NOW + 131);
+    await runScheduled(job);
+    const state = job.monitor();
+    expect(state?.heartbeat?.misses).toEqual([NOW + 70, NOW + 130]);
+    expect(job.hub.view().lastUpdate).toBe(NOW + 131);
+  });
+
+  it('stays late exactly at the deadline', async () => {
+    const job = createHeartbeatJob();
+    job.ping('success', NOW);
+
+    setNow(NOW + 70);
+    const delivered = await runScheduled(job);
+
+    const state = job.monitor();
+    expect(state?.heartbeat).toMatchObject({ status: 'late', deadline: NOW + 70 });
+    expect(state?.incidents).toEqual([]);
+    expect(delivered).toEqual([]);
+  });
+});

@@ -1,0 +1,18 @@
+import type {
+  Announcement,
+  HeartbeatState,
+  Incident,
+  LatencySample,
+  Maintenance,
+} from '../../src/types';
+
+/** What the browser tests start the hub with, keyed by monitor id. */
+export type HubFixture = {
+  lastUpdate: number;
+  startedAt: Record<string, number>;
+  incidents: Record<string, Incident[]>;
+  latency: Record<string, LatencySample[]>;
+  heartbeats: Record<string, HeartbeatState>;
+  maintenances: Maintenance[];
+  announcements: Announcement[];
+};

@@ -1,0 +1,28 @@
+import { STATUS_COLORS } from '@/lib/constants';
+
+const legendItems = [
+  { label: 'Operational', color: STATUS_COLORS.up },
+  { label: 'Brief downtime', color: STATUS_COLORS.partial },
+  { label: 'Longer downtime', color: STATUS_COLORS.down },
+] as const;
+
+export function CalendarLegend() {
+  return (
+    <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-3 list-none p-0 m-0">
+      {legendItems.map((item) => (
+        <li key={item.label} className="flex items-center gap-1 whitespace-nowrap">
+          <div className={`size-2 rounded-sm ${item.color}`} />
+          <span className="text-2xs text-muted-foreground">{item.label}</span>
+        </li>
+      ))}
+      <li className="flex items-center gap-1 whitespace-nowrap">
+        <div className="size-2 rounded-full bg-muted-foreground ring-1 ring-background/90" />
+        <span className="text-2xs text-muted-foreground">Incident</span>
+      </li>
+      <li className="flex items-center gap-1 whitespace-nowrap">
+        <div className={`size-2 rounded-sm ${STATUS_COLORS.unknown}`} />
+        <span className="text-2xs text-muted-foreground">No data</span>
+      </li>
+    </ul>
+  );
+}

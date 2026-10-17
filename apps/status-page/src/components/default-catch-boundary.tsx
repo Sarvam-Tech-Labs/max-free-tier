@@ -1,0 +1,53 @@
+import type { ErrorComponentProps } from '@tanstack/react-router';
+import { ErrorComponent, Link, rootRouteId, useMatch, useRouter } from '@tanstack/react-router';
+import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
+import { usePageHydrated } from '@/lib/hooks/use-page-hydration';
+
+export function DefaultCatchBoundary({ error }: ErrorComponentProps) {
+  usePageHydrated();
+  const router = useRouter();
+  const isRoot = useMatch({
+    select: (state) => state.id === rootRouteId,
+    strict: false,
+  });
+
+  return (
+    <div className="container mx-auto flex min-h-[60vh] max-w-5xl items-center justify-center px-4 py-8">
+      <Card className="w-full max-w-3xl">
+        <CardHeader className="text-center">
+          <div className="text-2xl font-semibold text-destructive">Something went wrong</div>
+        </CardHeader>
+        <CardContent>
+          <div className="mb-6 rounded-lg bg-muted p-4 text-sm text-foreground">
+            <ErrorComponent error={error} />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Button variant="outline" onClick={() => void router.invalidate()}>
+              Try again
+            </Button>
+
+            {isRoot ? (
+              <Link to="/" className={cn(buttonVariants({ variant: 'default' }))}>
+                Home
+              </Link>
+            ) : (
+              <Button
+                variant="secondary"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.history.back();
+                }}
+              >
+                Go back
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

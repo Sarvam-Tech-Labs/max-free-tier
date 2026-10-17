@@ -1,0 +1,650 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import {
+  createLogger,
+  fetchWithTimeout,
+  TimeoutError,
+  toHeaders,
+  withTimeout,
+  validateHttpResponse,
+  jsonPathKeys,
+  parseTcpTarget,
+  success,
+  failure,
+  formatUtcShort,
+  timingSafeEqual,
+  readJsonUpTo,
+} from '../src/utils';
+import type { MonitorTarget, SSLCertificateInfo } from '../src/types';
+import { createMonitor } from './helpers/monitors';
+import { freezeClock } from './helpers/clock';
+
+const execFileAsync = promisify(execFile);
+
+describe('TimeoutError', () => {
+  it('creates error with correct message', () => {
+    const error = new TimeoutError(5000);
+
+    expect(error.message).toBe('Operation timed out after 5000ms');
+    expect(error.name).toBe('TimeoutError');
+  });
+});
+
+describe('withTimeout', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it('resolves when promise completes before timeout', async () => {
+    const promise = Promise.resolve('success');
+
+    const result = await withTimeout(promise, 1000);
+
+    expect(result).toBe('success');
+  });
+
+  it('rejects with TimeoutError when promise takes too long', async () => {
+    const slowPromise = new Promise((resolve) => {
+      setTimeout(() => resolve('too late'), 2000);
+    });
+
+    const resultPromise = withTimeout(slowPromise, 1000);
+    vi.advanceTimersByTime(1000);
+
+    await expect(resultPromise).rejects.toThrow(TimeoutError);
+    await expect(resultPromise).rejects.toThrow('Operation timed out after 1000ms');
+  });
+
+  it('passes through original error when promise rejects', async () => {
+    const errorPromise = Promise.reject(new Error('original error'));
+
+    await expect(withTimeout(errorPromise, 1000)).rejects.toThrow('original error');
+  });
+
+  it('lets a Node process exit after fulfillment before the timeout expires', async () => {
+    vi.useRealTimers();
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--input-type=module',
+        '--eval',
+        `import { withTimeout } from ${JSON.stringify(new URL('../src/utils.ts', import.meta.url).href)};
+         console.log(await withTimeout(Promise.resolve('done'), 60_000));`,
+      ],
+      { timeout: 5000 },
+    );
+
+    expect(stdout).toBe('done\n');
+    expect(stderr).toBe('');
+  }, 10_000);
+
+  it('lets a Node process exit after handled rejection before the timeout expires', async () => {
+    vi.useRealTimers();
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--input-type=module',
+        '--eval',
+        `import { withTimeout } from ${JSON.stringify(new URL('../src/utils.ts', import.meta.url).href)};
+         try { await withTimeout(Promise.reject(new Error('fail')), 60_000); }
+         catch (error) { console.log(error.message); }`,
+      ],
+      { timeout: 5000 },
+    );
+
+    expect(stdout).toBe('fail\n');
+    expect(stderr).toBe('');
+  }, 10_000);
+});
+
+describe('fetchWithTimeout', () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('calls fetch with provided URL and options', async () => {
+    const mockFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('ok'));
+    globalThis.fetch = mockFetch;
+
+    const responsePromise = fetchWithTimeout('https://example.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await vi.runAllTimersAsync();
+    await responsePromise;
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, options] = mockFetch.mock.calls[0] ?? [];
+    expect(url).toBe('https://example.com');
+    expect(options?.method).toBe('POST');
+    expect(options?.headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('aborts a pending fetch at the default deadline', async () => {
+    vi.stubGlobal('AbortSignal', {
+      timeout: (ms: number) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), ms);
+        return controller.signal;
+      },
+    });
+    const fetchMock = vi.fn<typeof globalThis.fetch>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    globalThis.fetch = fetchMock;
+
+    const pending = fetchWithTimeout('https://example.com');
+    const assertion = expect(pending).rejects.toThrow('aborted');
+    let settled = false;
+    void pending.catch(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes body when provided', async () => {
+    const mockFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('ok'));
+    globalThis.fetch = mockFetch;
+
+    const responsePromise = fetchWithTimeout('https://example.com', {
+      method: 'POST',
+      body: JSON.stringify({ test: true }),
+    });
+
+    await vi.runAllTimersAsync();
+    await responsePromise;
+
+    const [, options] = mockFetch.mock.calls[0] ?? [];
+    expect(options?.body).toBe('{"test":true}');
+  });
+
+  it('returns response on success', async () => {
+    const mockResponse = new Response('test body', { status: 200 });
+    globalThis.fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(mockResponse);
+
+    const responsePromise = fetchWithTimeout('https://example.com');
+    await vi.runAllTimersAsync();
+    const response = await responsePromise;
+
+    expect(response).toBe(mockResponse);
+    expect(response.status).toBe(200);
+  });
+
+  it('propagates fetch errors', async () => {
+    globalThis.fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValue(new Error('Network error'));
+
+    const responsePromise = fetchWithTimeout('https://example.com');
+    vi.runAllTimers();
+
+    await expect(responsePromise).rejects.toThrow('Network error');
+  });
+});
+
+describe('validateHttpResponse', () => {
+  describe('status code validation', () => {
+    it('accepts 2xx status codes by default', async () => {
+      const monitor = createMonitor();
+
+      // Response requires status 200-599 and 204/304 must have null body
+      for (const status of [200, 201, 299]) {
+        const response = new Response('ok', { status });
+        const result = await validateHttpResponse(monitor, response);
+        expect(result).toBeNull();
+      }
+
+      const response204 = new Response(null, { status: 204 });
+      expect(await validateHttpResponse(monitor, response204)).toBeNull();
+    });
+  });
+
+  describe('keyword validation', () => {
+    it('matches UTF-8 characters split across stream chunks', async () => {
+      const bytes = new TextEncoder().encode('café 😀');
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+          controller.close();
+        },
+      });
+      await expect(
+        validateHttpResponse(createMonitor({ responseKeyword: 'café 😀' }), new Response(body)),
+      ).resolves.toBeNull();
+    });
+    it('reads at most 1 MiB of the body, so an endless one cannot exhaust memory', async () => {
+      const chunk = new TextEncoder().encode('x'.repeat(64 * 1024));
+      const endless = new ReadableStream<Uint8Array>({
+        pull: (controller) => controller.enqueue(chunk),
+      });
+      const monitor = createMonitor({ responseKeyword: 'ok' });
+
+      await expect(validateHttpResponse(monitor, new Response(endless))).resolves.toBe(
+        'Required keyword "ok" not found in response',
+      );
+
+      const late = `${'x'.repeat(1024 * 1024)}ok`;
+      await expect(validateHttpResponse(monitor, new Response(late))).resolves.toBe(
+        'Required keyword "ok" not found in response',
+      );
+      const early = `${'x'.repeat(1024 * 1024 - 2)}ok`;
+      await expect(validateHttpResponse(monitor, new Response(early))).resolves.toBeNull();
+    });
+
+    it('passes when responseKeyword is found', async () => {
+      const monitor = createMonitor({ responseKeyword: 'success' });
+      const response = new Response('Operation success completed', { status: 200 });
+
+      const result = await validateHttpResponse(monitor, response);
+
+      expect(result).toBeNull();
+    });
+
+    it('fails when responseKeyword is not found', async () => {
+      const monitor = createMonitor({ responseKeyword: 'success' });
+      const response = new Response('Operation failed', { status: 200 });
+
+      const result = await validateHttpResponse(monitor, response);
+
+      expect(result).toBe('Required keyword "success" not found in response');
+    });
+
+    it('fails when responseForbiddenKeyword is found', async () => {
+      const monitor = createMonitor({ responseForbiddenKeyword: 'error' });
+      const response = new Response('An error occurred', { status: 200 });
+
+      const result = await validateHttpResponse(monitor, response);
+
+      expect(result).toBe('Forbidden keyword "error" found in response');
+    });
+
+    it('passes when responseForbiddenKeyword is not found', async () => {
+      const monitor = createMonitor({ responseForbiddenKeyword: 'error' });
+      const response = new Response('All good', { status: 200 });
+
+      const result = await validateHttpResponse(monitor, response);
+
+      expect(result).toBeNull();
+    });
+
+    it('checks both keywords when configured', async () => {
+      const monitor = createMonitor({
+        responseKeyword: 'ok',
+        responseForbiddenKeyword: 'error',
+      });
+
+      const goodResponse = new Response('status: ok', { status: 200 });
+      expect(await validateHttpResponse(monitor, goodResponse)).toBeNull();
+
+      const missingRequired = new Response('status: done', { status: 200 });
+      expect(await validateHttpResponse(monitor, missingRequired)).toBe(
+        'Required keyword "ok" not found in response',
+      );
+
+      const hasForbidden = new Response('ok but error', { status: 200 });
+      expect(await validateHttpResponse(monitor, hasForbidden)).toBe(
+        'Forbidden keyword "error" found in response',
+      );
+    });
+
+    it('keyword matching is case-sensitive', async () => {
+      const monitor = createMonitor({ responseKeyword: 'SUCCESS' });
+      const response = new Response('success', { status: 200 });
+
+      const result = await validateHttpResponse(monitor, response);
+
+      expect(result).toBe('Required keyword "SUCCESS" not found in response');
+    });
+
+    it('skips the body read without keywords', async () => {
+      const response = new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            pull() {
+              throw new Error('body read must not happen');
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { status: 200 },
+      );
+
+      await expect(validateHttpResponse(createMonitor(), response)).resolves.toBeNull();
+      expect(response.bodyUsed).toBe(false);
+    });
+  });
+
+  describe('combined validation', () => {
+    it('returns the status error without reading the body', async () => {
+      const response = new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            pull() {
+              throw new Error('body read must not happen');
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { status: 500 },
+      );
+
+      const result = await validateHttpResponse(createMonitor({ responseKeyword: 'ok' }), response);
+
+      expect(result).toBe('Expected 2xx status, got 500');
+      expect(response.bodyUsed).toBe(false);
+    });
+  });
+});
+
+describe('response assertions', () => {
+  const json = (value: unknown, headers?: HeadersInit) =>
+    new Response(JSON.stringify(value), headers ? { headers } : {});
+
+  const unreadable = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull: () => {
+          throw new Error('body read must not happen');
+        },
+      }),
+      { headers: { 'X-Mode': 'live' } },
+    );
+
+  describe('responseJsonPath', () => {
+    const at = (
+      responseJsonPath: string,
+      responseJsonValue: Exclude<MonitorTarget['responseJsonValue'], undefined>,
+    ) => createMonitor({ responseJsonPath, responseJsonValue });
+
+    it.each(['$.a[', "$['a']", '$a', '$.a[-1]', '$.a[x]'])(
+      'reports malformed response path %s',
+      async (path) => {
+        await expect(validateHttpResponse(at(path, 'ok'), json({ a: 'ok' }))).resolves.toBe(
+          `responseJsonPath ${path} is not a $.a.b[0] path`,
+        );
+      },
+    );
+
+    it('selects multiple array indices including a multidigit index', async () => {
+      const body = [[], [], [...Array.from({ length: 10 }, () => 'wrong'), 'ok']];
+      await expect(validateHttpResponse(at('$[2][10]', 'ok'), json(body))).resolves.toBeNull();
+    });
+
+    it.each([
+      ['a nested string', { a: { b: [{ c: 'ok' }] } }, '$.a.b[0].c', 'ok'],
+      ['a number', { count: 3 }, '$.count', 3],
+      ['a boolean', { up: false }, '$.up', false],
+      ['null', { error: null }, '$.error', null],
+      ['the whole document', true, '$', true],
+      ['an index at the root', ['x', 'y'], '$[1]', 'y'],
+    ])('passes on %s that equals the value', async (_case, body, path, value) => {
+      await expect(validateHttpResponse(at(path, value), json(body))).resolves.toBeNull();
+    });
+
+    it.each([
+      ['a string that looks like the number', { count: '3' }, '$.count', 3],
+      ['a number for a string', { count: 3 }, '$.count', '3'],
+      ['a string for a boolean', { up: 'true' }, '$.up', true],
+      ['an object', { a: { b: 1 } }, '$.a', 'ok'],
+    ])('fails on %s, without quoting the response', async (_case, body, path, value) => {
+      const error = await validateHttpResponse(at(path, value), json(body));
+      expect(error).toBe(`JSON value at ${path} is not ${JSON.stringify(value)}`);
+    });
+
+    it.each([
+      ['a missing key', { a: {} }, '$.a.b'],
+      ['an index past the end', { a: [1] }, '$.a[1]'],
+      ['a key inside a string', { a: 'text' }, '$.a.length'],
+      ['an index into an object', { a: { 0: 'x' } }, '$.a[0]'],
+      ['a key into an array', { a: [1] }, '$.a.length'],
+      ['an inherited property', {}, '$.constructor'],
+      ['null where an object should be', { a: null }, '$.a.b'],
+    ])('reports %s as not found', async (_case, body, path) => {
+      await expect(validateHttpResponse(at(path, 'x'), json(body))).resolves.toBe(
+        `JSON path ${path} not found in response`,
+      );
+    });
+
+    it('never quotes the value it found', async () => {
+      const error = await validateHttpResponse(
+        at('$.status', 'ok'),
+        json({ status: 'token-1234' }),
+      );
+      expect(error).toBe('JSON value at $.status is not "ok"');
+      expect(error).not.toContain('token-1234');
+    });
+
+    it('fails on a body that is not JSON, without quoting it', async () => {
+      const error = await validateHttpResponse(
+        at('$.status', 'ok'),
+        new Response('<html>token-1234</html>'),
+      );
+      expect(error).toBe('Response is not valid JSON');
+    });
+
+    it('stops reading a body that never ends', async () => {
+      const chunk = new TextEncoder().encode(' '.repeat(64 * 1024));
+      const endless = new ReadableStream<Uint8Array>({ pull: (c) => c.enqueue(chunk) });
+
+      await expect(validateHttpResponse(at('$.status', 'ok'), new Response(endless))).resolves.toBe(
+        'Response is too large to check $.status',
+      );
+    });
+
+    it('returns the status error without reading the body', async () => {
+      const response = new Response(unreadable().body, { status: 503 });
+      await expect(validateHttpResponse(at('$.a', 1), response)).resolves.toBe(
+        'Expected 2xx status, got 503',
+      );
+    });
+  });
+
+  describe('responseHeaderEquals', () => {
+    it('never quotes the value it found', async () => {
+      const monitor = createMonitor({ responseHeaderEquals: { 'X-Token': 'expected' } });
+      const error = await validateHttpResponse(monitor, json({}, { 'X-Token': 'secret-1234' }));
+      expect(error).not.toContain('secret-1234');
+    });
+
+    it('fails on headers before reading the body', async () => {
+      const monitor = createMonitor({
+        responseHeaderEquals: { 'X-Mode': 'maintenance' },
+        responseKeyword: 'ok',
+      });
+      await expect(validateHttpResponse(monitor, unreadable())).resolves.toBe(
+        'Header "X-Mode" does not have the expected value',
+      );
+    });
+  });
+});
+
+describe('jsonPathKeys', () => {
+  it.each([['$[2][10]', [2, 10]]])('reads %s', (path, keys) => {
+    expect(jsonPathKeys(path)).toEqual(keys);
+  });
+
+  it.each(['$.a[', "$['a']", '$a'])('rejects %j', (path) => {
+    expect(jsonPathKeys(path)).toBeNull();
+  });
+});
+
+describe('parseTcpTarget', () => {
+  describe('valid targets', () => {
+    it('parses hostname:port format', () => {
+      const result = parseTcpTarget('example.com:80');
+
+      expect(result).toEqual({ hostname: 'example.com', port: 80 });
+    });
+
+    it('handles port boundaries', () => {
+      expect(parseTcpTarget('host:1')).toEqual({ hostname: 'host', port: 1 });
+      expect(parseTcpTarget('host:65535')).toEqual({ hostname: 'host', port: 65535 });
+    });
+  });
+
+  describe('invalid targets', () => {
+    it('throws on missing port', () => {
+      expect(() => parseTcpTarget('example.com')).toThrow(
+        'TCP target must include a port (hostname:port)',
+      );
+    });
+
+    it('throws on empty string', () => {
+      expect(() => parseTcpTarget('')).toThrow('Invalid TCP target hostname');
+    });
+
+    it('throws on port 0', () => {
+      expect(() => parseTcpTarget('host:0')).toThrow('Invalid TCP port: 0');
+    });
+  });
+});
+
+describe('success', () => {
+  it('creates a success result with latency only', () => {
+    const result = success(42);
+
+    expect(result).toEqual({ ok: true, latency: 42 });
+  });
+
+  it('creates a success result with SSL info', () => {
+    const ssl: SSLCertificateInfo = {
+      expiryDate: 1735689600,
+      daysUntilExpiry: 30,
+      issuer: "Let's Encrypt",
+      subject: 'example.com',
+    };
+
+    const result = success(100, ssl);
+
+    expect(result).toEqual({ ok: true, latency: 100, ssl });
+  });
+});
+
+describe('failure', () => {
+  it('creates a failure result with error only', () => {
+    const result = failure('Connection refused');
+
+    expect(result).toEqual({ ok: false, error: 'Connection refused' });
+  });
+
+  it('creates a failure result with error and latency', () => {
+    const result = failure('Timeout', 5000);
+
+    expect(result).toEqual({ ok: false, error: 'Timeout', latency: 5000 });
+  });
+
+  it('handles zero latency in failure', () => {
+    const result = failure('Immediate failure', 0);
+
+    expect(result.latency).toBe(0);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('toHeaders', () => {
+  it('converts numeric values to strings and keeps string values', () => {
+    const headers = toHeaders({ 'X-Retry': 3, Accept: 'application/json' });
+
+    expect(headers.get('X-Retry')).toBe('3');
+    expect(headers.get('Accept')).toBe('application/json');
+  });
+
+  it('returns empty headers when none are configured', () => {
+    const headers = toHeaders();
+
+    expect([...headers.keys()]).toStrictEqual([]);
+  });
+});
+
+describe('createLogger', () => {
+  beforeEach(() => {
+    freezeClock(new Date('2026-06-10T12:00:00Z'));
+  });
+
+  it('caller data cannot overwrite the envelope fields', () => {
+    const lines: string[] = [];
+    vi.spyOn(console, 'info').mockImplementation((output: unknown) => {
+      if (typeof output === 'string') lines.push(output);
+    });
+    const log = createLogger('Test');
+
+    log.info('real message', {
+      level: 'debug',
+      message: 'fake',
+      timestamp: 'stale',
+      component: 'Fake',
+    });
+
+    expect(lines).toHaveLength(1);
+    const entry = JSON.parse(lines[0]!) as {
+      level: string;
+      message: string;
+      timestamp: string;
+      component: string;
+    };
+    expect(entry).toStrictEqual({
+      level: 'info',
+      message: 'real message',
+      component: 'Test',
+      timestamp: '2026-06-10T12:00:00.000Z',
+    });
+  });
+});
+
+describe('formatUtcShort', () => {
+  it('matches the status page timestamp shape', () => {
+    expect(formatUtcShort(Date.parse('2026-09-16T07:02:42Z') / 1000)).toBe('Sep 16, 07:02 UTC');
+    expect(formatUtcShort(Date.parse('2026-01-05T00:00:00Z') / 1000)).toBe('Jan 5, 00:00 UTC');
+  });
+});
+
+describe('timingSafeEqual', () => {
+  it.each([
+    ['equal strings', 'abc', 'abc', true],
+    ['unequal strings', 'abc', 'abd', false],
+    ['different lengths', 'abc', 'ab', false],
+    ['a trailing zero byte', 'abc', 'abc\u0000', false],
+    ['empty strings', '', '', true],
+    ['one empty string', '', 'x', false],
+    ['equal UTF-8', 'café 😀', 'café 😀', true],
+    ['unequal UTF-8', 'é', 'è', false],
+  ] as const)('%s', (_case, a, b, equal) => {
+    expect(timingSafeEqual(a, b)).toBe(equal);
+    expect(timingSafeEqual(b, a)).toBe(equal);
+  });
+});
+
+describe('readJsonUpTo', () => {
+  it.each([
+    ['ASCII', '{"ok":true}', 11, { ok: true }],
+    ['UTF-8', '{"v":"é"}', 10, { v: 'é' }],
+  ] as const)('accepts %s JSON of exactly the byte limit', async (_case, body, limit, value) => {
+    await expect(readJsonUpTo(new Response(body), limit)).resolves.toEqual(value);
+  });
+  it.each([
+    ['ASCII', '{"ok":true} ', 11],
+    ['UTF-8', '{"v":"é"} ', 10],
+  ] as const)('rejects %s JSON one byte past the limit', async (_case, body, limit) => {
+    await expect(readJsonUpTo(new Response(body), limit)).rejects.toThrow(
+      `response is over ${limit} bytes`,
+    );
+  });
+});

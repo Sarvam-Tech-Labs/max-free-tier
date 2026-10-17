@@ -1,0 +1,254 @@
+// Pins the accepted and rejected shapes inherited from the pre-Zod guards; webhook payload,
+// monitor method and status page field validation are intentionally stricter.
+import { describe, expect, it } from 'vite-plus/test';
+import { configIssues, isValidMaintenance, parseMaintenances } from '../src/config';
+
+const monitor = { id: 'm1', name: 'M1', method: 'GET', target: 'https://example.com' };
+
+const runtimeConfigCases: Array<[string, unknown, boolean]> = [
+  ['minimal valid', { monitors: [] }, true],
+  ['not an object', 'nope', false],
+  ['null', null, false],
+  ['array', [], false],
+  ['monitors missing', {}, false],
+  ['monitors not an array', { monitors: {} }, false],
+  // A misspelt or mistyped field must fail the deploy, not be ignored.
+  ['monitor field of the wrong type', { monitors: [{ ...monitor, tooltip: 5 }] }, false],
+  ['monitor maxLatencyMs of one', { monitors: [{ ...monitor, maxLatencyMs: 1 }] }, true],
+  ['monitor link to a URL', { monitors: [{ ...monitor, link: 'https://a.com/x' }] }, true],
+  [
+    'javascript: monitor link rejected',
+    { monitors: [{ ...monitor, link: 'javascript:alert(1)' }] },
+    false,
+  ],
+  [
+    'heartbeat javascript: link rejected',
+    {
+      monitors: [
+        {
+          id: 'job',
+          name: 'Job',
+          method: 'HEARTBEAT',
+          periodSeconds: 60,
+          graceSeconds: 0,
+          link: ' javascript:alert(1)',
+        },
+      ],
+    },
+    false,
+  ],
+  [
+    'page links to URLs and paths',
+    {
+      monitors: [],
+      statusPage: {
+        links: [
+          { label: 'Home', link: 'https://example.com' },
+          { label: 'About', link: '/about', highlight: true },
+        ],
+      },
+    },
+    true,
+  ],
+  [
+    'javascript: page link rejected',
+    { monitors: [], statusPage: { links: [{ label: 'x', link: 'java\tscript:alert(1)' }] } },
+    false,
+  ],
+  [
+    'data: image favicon and logo accepted',
+    {
+      monitors: [],
+      statusPage: { favicon: 'data:image/png;base64,AAAA', logo: '/logo.svg' },
+    },
+    true,
+  ],
+  [
+    'data: html logo rejected',
+    { monitors: [], statusPage: { logo: 'data:text/html,<script>alert(1)</script>' } },
+    false,
+  ],
+  [
+    'webhook timeout over a minute',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', timeout: 60_001 } } },
+    false,
+  ],
+  [
+    'webhook timeout of zero',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', timeout: 0 } } },
+    false,
+  ],
+  [
+    'webhook timeout of a minute',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', timeout: 60_000 } } },
+    true,
+  ],
+  ['extra top-level keys ignored', { monitors: [], somethingElse: 42 }, true],
+  ['statusPage title must be a string', { monitors: [], statusPage: { title: 5 } }, false],
+  // A typo must not silently leave a private page public.
+  ['statusPage unknown visibility', { monitors: [], statusPage: { visibility: 'Private' } }, false],
+  [
+    'notification timeZone must be a string',
+    { monitors: [], notification: { timeZone: 5 } },
+    false,
+  ],
+  [
+    'notification gracePeriod must be a number',
+    { monitors: [], notification: { gracePeriod: 'x' } },
+    false,
+  ],
+  [
+    'infinite gracePeriod rejected',
+    { monitors: [], notification: { gracePeriod: Infinity } },
+    false,
+  ],
+  ['NaN gracePeriod rejected', { monitors: [], notification: { gracePeriod: NaN } }, false],
+  [
+    'skipNotificationIds must be strings',
+    { monitors: [], notification: { skipNotificationIds: [1] } },
+    false,
+  ],
+  ['webhook needs a url', { monitors: [], notification: { webhook: {} } }, false],
+  [
+    'webhook url must be http',
+    { monitors: [], notification: { webhook: { url: 'ftp://x.com' } } },
+    false,
+  ],
+  [
+    'unknown template rejected',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', template: 'nope' } } },
+    false,
+  ],
+  [
+    'lowercase method accepted',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', method: 'post' } } },
+    true,
+  ],
+  [
+    'unknown webhook method rejected',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', method: 'TRACE' } } },
+    false,
+  ],
+  [
+    'numeric header value accepted',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', headers: { a: 1 } } } },
+    true,
+  ],
+  [
+    'boolean header value rejected',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', headers: { a: true } } } },
+    false,
+  ],
+  [
+    'param payload null rejected',
+    {
+      monitors: [],
+      notification: { webhook: { url: 'https://a.com', payloadType: 'param', payload: null } },
+    },
+    false,
+  ],
+  [
+    'unknown payloadType rejected',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', payloadType: 'xml' } } },
+    false,
+  ],
+  [
+    'webhook timeout must be a number',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', timeout: '5' } } },
+    false,
+  ],
+  [
+    'infinite webhook timeout rejected',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', timeout: Infinity } } },
+    false,
+  ],
+  [
+    'NaN webhook timeout rejected',
+    { monitors: [], notification: { webhook: { url: 'https://a.com', timeout: NaN } } },
+    false,
+  ],
+];
+
+const maintenanceBase = { id: 'x', body: 'b', createdAt: 1, updatedAt: 2, start: 3 };
+
+const maintenanceCases: Array<[string, unknown, boolean]> = [
+  ['duplicate monitor IDs rejected', { ...maintenanceBase, monitors: ['api', 'api'] }, false],
+  [
+    'unsorted weekdays rejected',
+    { ...maintenanceBase, end: 9, repeat: { every: 'week', weekdays: [5, 1] } },
+    false,
+  ],
+  [
+    'noncanonical zone rejected',
+    { ...maintenanceBase, end: 9, repeat: { every: 'day', timeZone: 'europe/berlin' } },
+    false,
+  ],
+  ['minimal valid', maintenanceBase, true],
+  ['string start accepted', { ...maintenanceBase, start: '2026-01-01' }, true],
+  ['empty id rejected', { ...maintenanceBase, id: '' }, false],
+  ['empty body rejected', { ...maintenanceBase, body: '' }, false],
+  ['missing start rejected', { id: 'x', body: 'b', createdAt: 1, updatedAt: 2 }, false],
+  ['infinite createdAt rejected', { ...maintenanceBase, createdAt: Infinity }, false],
+  ['NaN updatedAt rejected', { ...maintenanceBase, updatedAt: NaN }, false],
+  ['infinite start rejected', { ...maintenanceBase, start: Infinity }, false],
+  ['NaN start rejected', { ...maintenanceBase, start: NaN }, false],
+  ['infinite end rejected', { ...maintenanceBase, end: Infinity }, false],
+  ['NaN end rejected', { ...maintenanceBase, end: NaN }, false],
+  ['boolean end rejected', { ...maintenanceBase, end: true }, false],
+  ['numeric end accepted', { ...maintenanceBase, end: 9 }, true],
+  ['unparseable start rejected', { ...maintenanceBase, start: 'soon' }, false],
+  ['unparseable end rejected', { ...maintenanceBase, end: '2026-13-45' }, false],
+  ['end before start rejected', { ...maintenanceBase, start: 10, end: 5 }, false],
+  [
+    'string end after string start accepted',
+    { ...maintenanceBase, start: '2026-01-01T10:00:00Z', end: '2026-01-01T12:00:00Z' },
+    true,
+  ],
+  ['monitors must be strings', { ...maintenanceBase, monitors: [1] }, false],
+  ['colour must be a string', { ...maintenanceBase, color: 1 }, false],
+  [
+    'repeating window accepted',
+    { ...maintenanceBase, end: 3_600_003, repeat: { every: 'week', weekdays: [1] } },
+    true,
+  ],
+  [
+    'repeating window without an end rejected',
+    { ...maintenanceBase, repeat: { every: 'day' } },
+    false,
+  ],
+  [
+    'padded time zone rejected',
+    { ...maintenanceBase, end: 9, repeat: { every: 'day', timeZone: ' Europe/Berlin ' } },
+    false,
+  ],
+  [
+    'blank time zone rejected',
+    { ...maintenanceBase, end: 9, repeat: { every: 'day', timeZone: '' } },
+    false,
+  ],
+  ['padded body rejected', { ...maintenanceBase, body: ' b ' }, false],
+  ['extra keys ignored', { ...maintenanceBase, whatever: {} }, true],
+  // Size caps apply when a window is written; one stored before them must still load.
+  ['stored body of 3000 characters accepted', { ...maintenanceBase, body: 'b'.repeat(3000) }, true],
+  [
+    'stored list of 101 monitors accepted',
+    { ...maintenanceBase, monitors: Array.from({ length: 101 }, (_, index) => `m${index}`) },
+    true,
+  ],
+  ['not an object', 7, false],
+];
+
+describe('config guard parity', () => {
+  it.each(runtimeConfigCases)('runtime config: %s', (_name, value, expected) => {
+    expect(configIssues(value).length === 0).toBe(expected);
+  });
+
+  it.each(maintenanceCases)('maintenance: %s', (_name, value, expected) => {
+    expect(isValidMaintenance(value)).toBe(expected);
+  });
+
+  it('parseMaintenances keeps the valid entries and drops the rest', () => {
+    expect(parseMaintenances([maintenanceBase, { id: '' }, 5])).toEqual([maintenanceBase]);
+    expect(parseMaintenances('nope')).toEqual([]);
+  });
+});

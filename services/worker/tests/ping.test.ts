@@ -1,0 +1,434 @@
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import {
+  parseHeartbeatSignal,
+  type HeartbeatRun,
+  type HeartbeatSignal,
+  type Monitor,
+  type WorkerConfig,
+} from '@flarewatch/shared';
+import type { Env } from '../src/env';
+import Worker, { runChecks } from '../src/index';
+import { deriveHeartbeatToken } from '../src/ping';
+import { createHub, hubNamespace } from './helpers/hub';
+import type { PingKind } from '../src/hub/heartbeat';
+import { createWorkerDeps } from './helpers/worker-deps';
+import { createHeartbeat } from '@flarewatch/shared/testing/monitors';
+import { freezeClock } from '@flarewatch/shared/testing/clock';
+
+const workerConfigMock: WorkerConfig = { monitors: [] };
+
+const NOW = Date.parse('2025-01-15T12:00:00Z') / 1000;
+const SECRET = 'test-heartbeat-secret';
+
+const heartbeat = createHeartbeat();
+const pullMonitor: Monitor = {
+  id: 'api',
+  name: 'API',
+  method: 'GET',
+  target: 'https://example.com',
+};
+
+function token(id: string = heartbeat.id): Promise<string> {
+  return deriveHeartbeatToken(SECRET, id);
+}
+
+function createEnv(extra: Partial<Env> = {}): Env {
+  return {
+    MONITOR_HUB: hubNamespace(hub),
+    HEARTBEAT_SECRET: SECRET,
+    HEARTBEAT_RATE_LIMIT: { limit: async () => ({ success: true }) },
+    ...extra,
+  };
+}
+
+function pingRequest(path: string, init: { method?: string; body?: string } = {}): Request {
+  return new Request(`https://worker.test${path}`, {
+    method: init.method ?? 'GET',
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
+}
+
+let hub = createHub().hub;
+
+async function ping(
+  path: string,
+  init?: { method?: string; body?: string },
+  env: Env = createEnv(),
+): Promise<Response> {
+  return Worker.fetch(
+    pingRequest(path, init),
+    env,
+    {} as ExecutionContext,
+    createWorkerDeps(workerConfigMock),
+  );
+}
+
+function signal(): HeartbeatSignal {
+  const signal = parseHeartbeatSignal(hub.view().monitors[heartbeat.id]?.heartbeat);
+  if (!signal) throw new Error('Signal was not saved');
+  return signal;
+}
+
+function lastRun(): HeartbeatRun | undefined {
+  const runs = signal().runs ?? [];
+  return runs[runs.length - 1];
+}
+
+/** An earlier ping, recorded straight into the hub. */
+function seed(kind: PingKind, at: number, message?: string): void {
+  hub.ping(heartbeat, kind, at, message);
+}
+
+describe('heartbeat tokens', () => {
+  it('are stable, 32 characters long, and distinct per id', async () => {
+    const first = await token();
+    const second = await token();
+
+    expect(first).toBe('ilj38AekxPUwhSJtEYcJqRW76MVAbiY9');
+    expect(first).toBe(second);
+    expect(first).toHaveLength(32);
+    expect(first).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(await token('other-job')).not.toBe(first);
+    expect(await deriveHeartbeatToken('rotated-heartbeat-secret', heartbeat.id)).not.toBe(first);
+  });
+});
+
+describe('ping routes', () => {
+  beforeEach(() => {
+    freezeClock(new Date(NOW * 1000));
+    workerConfigMock.monitors = [heartbeat, pullMonitor];
+    hub = createHub().hub;
+  });
+
+  it.each(['GET', 'POST', 'HEAD'])('records a success ping via %s', async (method) => {
+    seed('fail', NOW - 60, 'boom');
+
+    const response = await ping(`/ping/${heartbeat.id}/${await token()}`, { method });
+
+    expect(response.status).toBe(200);
+    expect(signal()).toEqual({
+      lastSuccess: NOW,
+      runs: [
+        { at: NOW - 60, outcome: 'fail' },
+        { at: NOW, outcome: 'ok' },
+      ],
+    });
+    if (method === 'HEAD') {
+      await expect(response.text()).resolves.toBe('');
+    } else {
+      await expect(response.text()).resolves.toBe('OK');
+    }
+  });
+
+  it('records a late success only past period plus grace', async () => {
+    seed('success', NOW - 3659);
+
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    // One second past the period but inside the 60 s grace window.
+    expect(lastRun()).toEqual({ at: NOW, outcome: 'ok' });
+
+    hub = createHub().hub;
+    seed('success', NOW - 4000);
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    expect(lastRun()).toEqual({ at: NOW, outcome: 'late' });
+  });
+
+  it('replaces a retry within 30 s, appends after a period', async () => {
+    seed('success', NOW - 10);
+
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    expect(signal().runs).toEqual([{ at: NOW, outcome: 'ok' }]);
+
+    // A 60 s period accumulates history: the next ping is not a retry.
+    vi.setSystemTime(new Date((NOW + 60) * 1000));
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    expect(signal().runs).toEqual([
+      { at: NOW, outcome: 'ok' },
+      { at: NOW + 60, outcome: 'ok' },
+    ]);
+  });
+
+  it('pairs startedAt with the finishing run and consumes it afterwards', async () => {
+    seed('success', NOW - 60);
+    seed('start', NOW);
+
+    vi.setSystemTime(new Date((NOW + 120) * 1000));
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    expect(lastRun()).toEqual({ at: NOW + 120, outcome: 'ok', startedAt: NOW });
+    expect(signal().lastStart).toBeUndefined();
+
+    vi.setSystemTime(new Date((NOW + 240) * 1000));
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    expect(lastRun()).toEqual({ at: NOW + 240, outcome: 'ok' });
+  });
+
+  it('keeps a same-second success and fail as two runs', async () => {
+    await ping(`/ping/${heartbeat.id}/${await token()}/fail`, { method: 'POST', body: 'boom' });
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    expect(signal().runs).toEqual([
+      { at: NOW, outcome: 'fail' },
+      { at: NOW, outcome: 'ok' },
+    ]);
+  });
+
+  it('counts fail body bytes across split chunks', async () => {
+    const encoder = new TextEncoder();
+    const body = encoder.encode('€'.repeat(5) + 'x'.repeat(1009));
+    expect(body.byteLength).toBe(1024);
+
+    const streamFail = async (chunks: Uint8Array[]): Promise<Response> =>
+      Worker.fetch(
+        new Request(`https://worker.test/ping/${heartbeat.id}/${await token()}/fail`, {
+          method: 'POST',
+          duplex: 'half',
+          body: new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(chunk);
+              controller.close();
+            },
+          }),
+        } as RequestInit),
+        createEnv(),
+        {} as ExecutionContext,
+        createWorkerDeps(workerConfigMock),
+      );
+
+    const ok = await streamFail([body.slice(0, 4), body.slice(4)]);
+    expect(ok.status).toBe(200);
+    expect(signal().message).toBe('€'.repeat(5) + 'x'.repeat(195));
+
+    const oversized = await streamFail([encoder.encode('€'.repeat(342))]);
+    expect(oversized.status).toBe(413);
+    expect(signal().message).toBe('€'.repeat(5) + 'x'.repeat(195));
+  });
+
+  it('caps the run history at 90 entries', async () => {
+    // 31 s apart, so no seeded ping counts as a retry of the one before.
+    for (let i = 0; i < 90; i++) seed('success', NOW - 90 * 31 + i * 31);
+
+    await ping(`/ping/${heartbeat.id}/${await token()}`);
+
+    const history = signal().runs ?? [];
+    expect(history).toHaveLength(90);
+    expect(history[0]).toEqual({ at: NOW - 89 * 31, outcome: 'ok' });
+    expect(history[89]).toEqual({ at: NOW, outcome: 'ok' });
+  });
+
+  it('records a start ping without touching lastSuccess', async () => {
+    seed('success', NOW - 100);
+
+    const response = await ping(`/ping/${heartbeat.id}/${await token()}/start`, { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    expect(signal()).toEqual({
+      lastSuccess: NOW - 100,
+      lastStart: NOW,
+      runs: [{ at: NOW - 100, outcome: 'ok' }],
+    });
+  });
+
+  it('records a fail ping with the body as message', async () => {
+    const response = await ping(`/ping/${heartbeat.id}/${await token()}/fail`, {
+      method: 'POST',
+      body: 'backup failed\nchecksum mismatch',
+    });
+
+    expect(response.status).toBe(200);
+    expect(signal()).toEqual({
+      lastFail: NOW,
+      message: 'backup failed\nchecksum mismatch',
+      runs: [{ at: NOW, outcome: 'fail' }],
+    });
+  });
+
+  it('caps the fail message at 200 chars and strips control characters', async () => {
+    const body = `a\x00b\x1fc\x7f${'d'.repeat(400)}\n`;
+
+    await ping(`/ping/${heartbeat.id}/${await token()}/fail`, { method: 'POST', body });
+
+    const stored = signal();
+    expect(stored.message).toHaveLength(200);
+    expect(stored.message).toBe(`abc${'d'.repeat(197)}`);
+    expect(stored.lastFail).toBe(NOW);
+  });
+
+  it('rejects oversized fail bodies with 413 and accepts exactly 1024 bytes', async () => {
+    const tok = await token();
+    const oversized = await ping(`/ping/${heartbeat.id}/${tok}/fail`, {
+      method: 'POST',
+      body: 'x'.repeat(1025),
+    });
+    expect(oversized.status).toBe(413);
+    expect(hub.view().monitors[heartbeat.id]).toBeUndefined();
+
+    const exact = await ping(`/ping/${heartbeat.id}/${tok}/fail`, {
+      method: 'POST',
+      body: 'x'.repeat(1024),
+    });
+    expect(exact.status).toBe(200);
+    expect(signal().message).toHaveLength(200);
+  });
+
+  it('treats exit 0 as success and other exit codes as failures', async () => {
+    const ok = await ping(`/ping/${heartbeat.id}/${await token()}/0`);
+    expect(ok.status).toBe(200);
+    expect(signal()).toEqual({ lastSuccess: NOW, runs: [{ at: NOW, outcome: 'ok' }] });
+
+    hub = createHub().hub;
+    const failed = await ping(`/ping/${heartbeat.id}/${await token()}/3`, { method: 'POST' });
+    expect(failed.status).toBe(200);
+    expect(signal()).toEqual({
+      lastFail: NOW,
+      message: 'exit 3',
+      runs: [{ at: NOW, outcome: 'fail' }],
+    });
+  });
+
+  it('returns 404 for paths outside the route matrix', async () => {
+    const tok = await token();
+    const paths = [
+      `/ping/${heartbeat.id}/${tok}/256`,
+      `/ping/${heartbeat.id}/${tok}/abc`,
+      `/ping/${heartbeat.id}/${tok}/fail/extra`,
+      `/ping/${heartbeat.id}`,
+    ];
+
+    for (const path of paths) {
+      const response = await ping(path);
+      expect(response.status, path).toBe(404);
+    }
+  });
+
+  it('accepts only the documented methods per route', async () => {
+    const tok = await token();
+    const requests = [
+      { path: `/ping/${heartbeat.id}/${tok}/fail`, method: 'GET' },
+      { path: `/ping/${heartbeat.id}/${tok}/start`, method: 'HEAD' },
+      { path: `/ping/${heartbeat.id}/${tok}`, method: 'DELETE' },
+      { path: `/ping/${heartbeat.id}/${tok}/3`, method: 'PUT' },
+    ];
+
+    for (const { path, method } of requests) {
+      const response = await ping(path, { method });
+      expect(response.status, `${method} ${path}`).toBe(404);
+    }
+  });
+
+  it('returns 404 for bad token, wrong id, or missing secret', async () => {
+    const tok = await token();
+
+    await expect(ping(`/ping/${heartbeat.id}/${'A'.repeat(32)}`)).resolves.toHaveProperty(
+      'status',
+      404,
+    );
+    await expect(ping(`/ping/ghost/${await token('ghost')}`)).resolves.toHaveProperty(
+      'status',
+      404,
+    );
+    await expect(
+      ping(`/ping/${pullMonitor.id}/${await token(pullMonitor.id)}`),
+    ).resolves.toHaveProperty('status', 404);
+    await expect(
+      ping(`/ping/${heartbeat.id}/${tok}`, undefined, { MONITOR_HUB: hubNamespace(hub) }),
+    ).resolves.toHaveProperty('status', 404);
+  });
+
+  it('returns 429 when the rate limit binding rejects, keyed by monitor id', async () => {
+    const limiter = { limit: vi.fn(async () => ({ success: false })) };
+
+    const limited = await ping(`/ping/${heartbeat.id}/${await token()}`, undefined, {
+      ...createEnv(),
+      HEARTBEAT_RATE_LIMIT: limiter,
+    });
+
+    expect(limited.status).toBe(429);
+    expect(limiter.limit).toHaveBeenCalledWith({ key: heartbeat.id });
+    expect(hub.view().monitors[heartbeat.id]).toBeUndefined();
+  });
+
+  it('refuses with 503 and leaves the hub alone without the rate limit binding', async () => {
+    const { HEARTBEAT_RATE_LIMIT: _limiter, ...env } = createEnv();
+
+    const response = await ping(`/ping/${heartbeat.id}/${await token()}`, undefined, env);
+
+    expect(response.status).toBe(503);
+    await expect(response.text()).resolves.toBe('HEARTBEAT_RATE_LIMIT binding not found');
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(hub.view().monitors[heartbeat.id]).toBeUndefined();
+  });
+
+  it('passes the rate limiter when it allows the ping', async () => {
+    const limiter = { limit: vi.fn(async () => ({ success: true })) };
+
+    const response = await ping(`/ping/${heartbeat.id}/${await token()}`, undefined, {
+      ...createEnv(),
+      HEARTBEAT_RATE_LIMIT: limiter,
+    });
+
+    expect(response.status).toBe(200);
+    expect(limiter.limit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([200, 404])('sends no-store and no-referrer headers on %i', async (status) => {
+    const response =
+      status === 200
+        ? await ping(`/ping/${heartbeat.id}/${await token()}`)
+        : await ping(`/ping/${heartbeat.id}/bad-token`);
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+  });
+
+  it('builds ping urls from PUBLIC_ORIGIN and falls back to the request origin', async () => {
+    const tok = await token();
+
+    const withVar = await ping(`/ping-url/${heartbeat.id}`, undefined, {
+      ...createEnv(),
+      PUBLIC_ORIGIN: 'https://status.example.com',
+    });
+    await expect(withVar.json()).resolves.toEqual({
+      url: `https://status.example.com/ping/${heartbeat.id}/${tok}`,
+    });
+
+    const fromRequest = await ping(`/ping-url/${heartbeat.id}`);
+    await expect(fromRequest.json()).resolves.toEqual({
+      url: `https://worker.test/ping/${heartbeat.id}/${tok}`,
+    });
+  });
+
+  it('ping-url gives 404 for unknown ids, 500 without secret', async () => {
+    await expect(ping('/ping-url/ghost')).resolves.toHaveProperty('status', 404);
+    await expect(ping(`/ping-url/${pullMonitor.id}`)).resolves.toHaveProperty('status', 404);
+    await expect(
+      ping(`/ping-url/${heartbeat.id}`, undefined, { MONITOR_HUB: hubNamespace(hub) }),
+    ).resolves.toHaveProperty('status', 500);
+  });
+});
+
+describe('ping to scheduled check end to end', () => {
+  beforeEach(() => {
+    freezeClock(new Date(NOW * 1000));
+    workerConfigMock.monitors = [heartbeat];
+    hub = createHub().hub;
+  });
+
+  it('marks the monitor up after a ping inside the period', async () => {
+    const response = await ping(`/ping/${heartbeat.id}/${await token()}`);
+    expect(response.status).toBe(200);
+
+    await runChecks(createEnv(), createWorkerDeps(workerConfigMock));
+
+    expect(hub.view().monitors[heartbeat.id]?.heartbeat).toMatchObject({
+      status: 'up',
+      lastSuccess: NOW,
+    });
+  });
+});
