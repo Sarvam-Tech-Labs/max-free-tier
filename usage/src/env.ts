@@ -20,6 +20,8 @@ export interface Env {
   DASHBOARD_PASSWORD?: string;
   /** Service binding to FlareWatch's monitor Worker; the site reads GET /view from it (uptime per client). */
   MONITOR_WORKER?: Fetcher;
+  /** Secret: 32 random bytes, base64. Encrypts tokens pasted into the site. Unset = token management is off (secrets-only). */
+  TOKEN_ENCRYPTION_KEY?: string;
   /** Secret. Bearer token the daily GitHub Actions jobs use to POST their results to /ingest. Unset = /ingest is 404. */
   INGEST_TOKEN?: string;
   /** IANA time zone for every time on the site (the registry's org.timeZone). Default Asia/Kolkata. */

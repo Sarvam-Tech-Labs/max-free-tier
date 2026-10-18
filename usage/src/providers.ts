@@ -117,23 +117,25 @@ async function github(
   now: Date,
   levels: readonly number[],
   f: typeof fetch,
+  info?: TokenInfo,
 ) {
   const today = now.toISOString().slice(0, 10);
   const owner = `${t.org ? "organizations" : "users"}/${encodeURIComponent(t.account as string)}`;
   const q = `year=${now.getUTCFullYear()}&month=${now.getUTCMonth() + 1}`;
-  const body = await json<GitHubSummary>(
-    "github",
-    `${GITHUB_API}/${owner}/settings/billing/usage/summary?${q}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "max-free-tier", // GitHub rejects requests without one
-      },
+  const res = await f(`${GITHUB_API}/${owner}/settings/billing/usage/summary?${q}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "max-free-tier", // GitHub rejects requests without one
     },
-    f,
-  );
+  });
+  if (!res.ok) throw new Error(`github: HTTP ${res.status}`);
+  // Fine-grained tokens say when they expire ("2026-11-17 11:07:28 UTC"): worth a warning before they silently stop.
+  const exp = res.headers.get("github-authentication-token-expiration");
+  const expMs = exp ? Date.parse(exp.replace(" UTC", "Z").replace(" ", "T")) : Number.NaN;
+  if (info && !Number.isNaN(expMs)) info.expiresAt = new Date(expMs).toISOString();
+  const body = (await res.json()) as GitHubSummary;
   const minutes = (body.usageItems ?? [])
     .filter((i) => /actions/i.test(i.product ?? "") && /minute/i.test(i.unitType ?? ""))
     .reduce((a, i) => a + (i.grossQuantity ?? 0), 0);
@@ -326,6 +328,15 @@ async function vercel(
 
 const CHECKS = { github, resend, supabase, vercel };
 
+/** Facts about the token itself that a check can learn, filled in by checkTarget when the platform says so. */
+export interface TokenInfo {
+  /** When the token expires (ISO), if the platform reports it. */
+  expiresAt?: string;
+}
+
+/** The error a check throws when no token with that name has been added. */
+export const MISSING_TOKEN = "is not set";
+
 /** All readings for one target. Throws on a missing token or a failed call; the caller isolates targets. */
 export function checkTarget(
   t: ProviderTarget,
@@ -333,10 +344,15 @@ export function checkTarget(
   now: Date,
   levels: readonly number[],
   fetchImpl: typeof fetch,
+  info?: TokenInfo,
 ): Promise<LimitStatus[]> {
   const token = tokens[t.token];
-  if (!token) return Promise.reject(new Error(`token ${t.token} missing from PROVIDER_TOKENS`));
-  return CHECKS[t.kind](t, token, now, levels, fetchImpl);
+  if (!token) {
+    return Promise.reject(
+      new Error(`token ${t.token} ${MISSING_TOKEN} (add it on the site's Tokens page)`),
+    );
+  }
+  return CHECKS[t.kind](t, token, now, levels, fetchImpl, info);
 }
 
 export const KIND_LABEL: Readonly<Record<ProviderKind, string>> = {

@@ -6,6 +6,7 @@
  * HTTP Basic is required:
  *   /              Free-tier limits: every platform's allowances, how they reset, and every detected change
  *   /consumption   pick an email → its platforms, consumption, exact reset times, uptime and domains (?email=)
+ *   /tokens        paste, test and delete the platform tokens the monitor uses (tokens.ts)
  *   /classic       the original 7-day table with spike detection
  * POST /ingest is the one exception: the daily GitHub Actions jobs report with their own token (ingest.ts).
  */
@@ -17,12 +18,21 @@ import { buildLedger } from "./ledger";
 import { PROVIDERS_CRON, renderIndex, runCollect, runProviders } from "./run";
 import { loadRuns, recentAlerts } from "./store";
 import { safeZone } from "./time";
-import { type PageData, renderConsumptionPage, renderLimitsPage } from "./views";
+import { handleTokenApi, tokensOverview } from "./tokens";
+import { type PageData, renderConsumptionPage, renderLimitsPage, renderTokensPage } from "./views";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 const NOT_FOUND = () => new Response("Not found", { status: 404 });
+// This site lists client usage and takes tokens: never framed, never leaks its address, no content sniffing.
+const SAFE = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": "frame-ancestors 'none'",
+};
 const html = (body: string) =>
-  new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE } });
+  new Response(body, {
+    headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE, ...SAFE },
+  });
 
 /** Everything both tabs read: the ledger, FlareWatch's uptime, stored domain expiry, check runs and the change log. */
 async function pageData(env: Env): Promise<PageData> {
@@ -57,7 +67,9 @@ export default {
     const url = new URL(request.url);
     // The daily GitHub Actions jobs report here with their own token (not the site password).
     if (url.pathname === "/ingest" && request.method === "POST") return handleIngest(request, env);
-    if (request.method !== "GET" || !env.DASHBOARD_PASSWORD) return NOT_FOUND();
+    if (!env.DASHBOARD_PASSWORD) return NOT_FOUND();
+    const isTokenApi = url.pathname === "/api/tokens" || url.pathname.startsWith("/api/tokens/");
+    if (request.method !== "GET" && !isTokenApi) return NOT_FOUND();
     if (!(await authorized(request, env.DASHBOARD_PASSWORD))) {
       return new Response("Sign in", {
         status: 401,
@@ -67,6 +79,7 @@ export default {
         },
       });
     }
+    if (isTokenApi) return handleTokenApi(request, env);
     switch (url.pathname) {
       case "/":
         return html(renderLimitsPage(await pageData(env)));
@@ -74,6 +87,8 @@ export default {
         return html(
           renderConsumptionPage(await pageData(env), url.searchParams.get("email") ?? ""),
         );
+      case "/tokens":
+        return html(renderTokensPage(await pageData(env), await tokensOverview(env)));
       case "/classic":
         return html(await renderIndex(env));
       default:

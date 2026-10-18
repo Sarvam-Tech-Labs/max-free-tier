@@ -64,9 +64,8 @@ gh secret set TELEGRAM_BOT_TOKEN    --repo $R
 gh secret set TELEGRAM_CHAT_ID      --repo $R
 gh secret set FLAREWATCH_ADMIN_BASIC_AUTH --repo $R   # status page password:
 #   cd uptime && npx -y pnpm@12.11.2 install --ignore-scripts && npx -y pnpm@12.11.2 run auth:secret -- <user> '<password>'
-# Optional — only if the registry has `usage:` blocks (GitHub / Resend / Supabase / Vercel). One JSON object, keys =
-# the `token:` names in the registry. Tokens and scopes are listed in clients.example.yaml.
-gh secret set PROVIDER_TOKENS --repo $R   # e.g. {"GH_ACME":"github_pat_…","RESEND_ACME":"re_…","SUPABASE":"sbp_…"}
+# Encrypts tokens pasted on the site's Tokens page. Generate once; keep it (losing it means re-pasting the tokens):
+node -e 'console.log(require("crypto").randomBytes(32).toString("base64"))' | gh secret set TOKEN_ENCRYPTION_KEY --repo $R
 ```
 The daily free-tier terms watch runs in your copy of *this* repo and holds no client data; it needs only
 `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set there too.
@@ -95,6 +94,19 @@ To show the daily free-tier terms watch and limits check in the change history, 
 secret in both repos and the repository variable `INGEST_URL`
 (`https://max-free-tier-usage.<subdomain>.workers.dev/ingest`) in the repo that runs the terms watch.
 `/classic` keeps the original 7-day table with spike detection.
+
+### Tokens (GitHub, Resend, Supabase, Vercel)
+Add a `usage:` block to a client in the registry (see `clients.example.yaml`): it names a token, e.g. `token: GH_ACME`.
+Then open the site's **Tokens** page: it lists every name the registry needs and which are missing. Click **Add token**,
+paste it, and the site verifies it against the platform, encrypts it (AES-256-GCM, key = the `TOKEN_ENCRYPTION_KEY`
+secret) and shows the platform as connected straight away. You never send a token to anyone else, and it is never shown
+again: the page keeps only the last four characters. From there you can **Replace**, **Test** and **Delete** a token.
+
+Telegram warns you when a saved token fails two checks in a row (then at most once a day) or expires within 14 days.
+GitHub's expiry is read automatically; for the others enter the date you chose when creating the token.
+Anyone with the site password can add, replace or delete tokens but cannot read them, so prefer read-only tokens.
+Tokens set the old way (the `PROVIDER_TOKENS` deployment secret) keep working; a pasted token of the same name wins.
+
 
 ## 8. Also turn on (no code)
 - In each client's Cloudflare account → Notifications: Workers usage notifications. D1 limit emails are automatic.

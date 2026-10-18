@@ -95,6 +95,8 @@ function ledger(): Ledger {
         client("beta", "Beta Foods", undefined, { status: "unconfirmed", platforms: ["firebase"] }),
         client("evil", "<script>alert(1)</script>", 'x@y.in"><b>', {}),
       ],
+      // The registry asks for a Vercel token for acme that has not been pasted yet.
+      targets: [{ clientId: "acme", platform: "vercel", token: "VERCEL_ACME" }],
       providers: [
         card({
           id: "cf-acme",
@@ -465,6 +467,10 @@ describe("tab 2: consumption", () => {
     const html = renderConsumptionPage(data(), "owner@acme.in");
     expect(html).toContain("Not connected");
     expect(html).toContain("Vercel's Hobby plan"); // apostrophes are not escaped
+    // The registry asks for VERCEL_ACME: the hint names it and points to the Tokens page.
+    expect(html).toContain(
+      'Waiting for <code>VERCEL_ACME</code>. Paste it on the <a href="/tokens">Tokens page</a>',
+    );
     // Collapsed by default, so the list of what the plan includes cannot push real data off the page.
     expect(html).toMatch(
       /<details[^>]*><summary>[\s\S]*?What the free plan includes \(11 limits\)/,
@@ -557,5 +563,7 @@ describe("tab 2: consumption", () => {
     expect(html).toContain("Not connected");
     expect(html).toContain("No Cloudflare account is linked");
     expect(html).toContain("Nothing connected yet");
+    // Resend has no usage block in the registry: the hint says what to add first, then where to paste the token.
+    expect(html).toContain("Not set up yet: add a <code>usage:</code> block for Resend");
   });
 });

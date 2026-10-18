@@ -24,6 +24,10 @@ const ICONS = {
   history: `<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>`,
   plug: `<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>`,
   layers: `<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>`,
+  key: `<path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-3 3 3 3"/><path d="m15 8 3-3"/>`,
+  trash: `<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>`,
+  refresh: `<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>`,
+  shield: `<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>`,
   activity: `<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>`,
 } as const;
 
@@ -71,7 +75,11 @@ a{color:var(--indigo-300);text-decoration:none}a:hover{color:var(--accent-second
 .tab{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border:1px solid transparent;border-radius:var(--radius-full);color:var(--text-secondary);font-weight:500;white-space:nowrap;transition:var(--transition-fast)}
 .tab:hover{color:var(--text-primary);background:rgba(255,255,255,.05)}
 .tab[aria-current="page"]{color:var(--indigo-300);background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.35)}
-.nav-meta{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--text-secondary);font-size:.75rem;white-space:nowrap}
+.nav-meta{margin-left:auto;display:flex;align-items:center;gap:16px;color:var(--text-secondary);font-size:.75rem;white-space:nowrap}
+.nav-meta .stamp{display:flex;align-items:center;gap:8px}
+.nav-link{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border-color);border-radius:var(--radius-full);color:var(--text-secondary);font-size:.875rem;font-weight:500;transition:var(--transition-fast)}
+.nav-link:hover{color:var(--text-primary);border-color:var(--border-hover)}
+.nav-link[aria-current="page"]{color:var(--indigo-300);background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.35)}
 
 main{padding:32px 0 64px}
 .page-head{margin-bottom:24px}
@@ -114,6 +122,30 @@ input[type=search]:focus,select:focus{outline:none;border-color:var(--accent-pri
 .btn{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:var(--radius-md);border:1px solid var(--border-color);background:transparent;color:var(--text-primary);font:500 .875rem var(--font-sans);cursor:pointer;transition:var(--transition-fast)}
 .btn:hover{border-color:var(--accent-primary);color:var(--indigo-300);background:rgba(99,102,241,.05)}
 .btn.icon-only{padding:8px}
+.btn.primary{background:var(--gradient-primary);border-color:transparent;color:#fff;box-shadow:0 4px 14px rgba(99,102,241,.3)}
+.btn.primary:hover{color:#fff;background:var(--gradient-primary);box-shadow:0 6px 20px rgba(99,102,241,.45)}
+.btn.danger:hover{border-color:var(--error);color:#f87171;background:rgba(239,68,68,.06)}
+.btn.small{padding:6px 12px;font-size:.75rem}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* dialog + form */
+dialog{background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:var(--radius-lg);padding:0;width:min(560px,calc(100% - 32px));box-shadow:0 10px 15px rgba(0,0,0,.4)}
+dialog::backdrop{background:rgba(5,5,10,.7);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+dialog form{padding:24px;display:flex;flex-direction:column;gap:16px}
+dialog h2{margin:0}
+.help{background:rgba(255,255,255,.03);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:12px 16px;color:var(--text-secondary)}
+.help p{margin:0 0 6px}.help p:last-child{margin:0}
+.field input[type=password],.field input[type=text],.field input[type=date]{background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:10px 12px;font:400 .875rem var(--font-sans);width:100%;transition:var(--transition-fast)}
+.field input[type=password]{font-family:var(--font-mono)}
+.field input:hover{border-color:var(--border-hover)}
+.field input:focus{outline:none;border-color:var(--accent-primary);box-shadow:0 0 0 2px rgba(99,102,241,.2)}
+.field .hint{font-size:.75rem;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400}
+.form-error{padding:10px 14px;border-radius:var(--radius-md);background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);color:#fca5a5}
+.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.toast{position:fixed;right:24px;bottom:24px;z-index:40;max-width:min(440px,calc(100% - 32px));padding:12px 16px;border-radius:var(--radius-md);background:var(--bg-surface-hover);border:1px solid var(--border-hover);box-shadow:var(--shadow-md)}
+.toast.ok{border-color:rgba(34,197,94,.5)}.toast.bad{border-color:rgba(239,68,68,.5);color:#fca5a5}
+code{font-family:var(--font-mono);font-size:.8125rem;background:rgba(255,255,255,.06);padding:1px 6px;border-radius:var(--radius-sm)}
 
 /* tables */
 .table-wrap{overflow-x:auto;border:1px solid var(--border-color);border-radius:var(--radius-md)}
@@ -171,10 +203,21 @@ summary .icon{transition:transform var(--transition-fast)}details[open]>summary 
 footer{color:var(--text-secondary);font-size:.75rem;padding:24px 0 48px;border-top:1px solid var(--border-color)}
 
 @media (max-width:960px){
+  .nav-link span{display:none}.nav-meta .stamp{display:none}
   .filters{grid-template-columns:1fr 1fr}.filters .search-f{grid-column:1/-1}
   .layout{grid-template-columns:minmax(0,1fr)}
   .sidebar{position:fixed;z-index:25;top:72px;left:12px;bottom:12px;width:min(320px,86vw);max-height:none;box-shadow:0 10px 15px rgba(0,0,0,.4)}
-  .nav .container{gap:12px}.brand span{display:none}.nav-meta{display:none}
+  .nav .container{gap:12px}.brand span{display:none}
+}
+@media (max-width:700px){
+  table.cards thead{display:none}
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%}
+  table.cards tr{padding:12px 0;border-bottom:1px solid var(--border-color)}
+  table.cards tr:last-child{border-bottom:0}
+  table.cards td{border:0;padding:6px 16px}
+  table.cards tbody tr:hover td{background:none}
+  table.cards td[data-label]:not([data-label=""])::before{content:attr(data-label);display:block;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-secondary);margin-bottom:2px}
+  .table-wrap:has(table.cards){border:0}
 }
 @media (max-width:560px){.container{padding:0 16px}.brand div{display:none}.tabs{margin-left:0}.tab{padding:8px 12px}.tab .icon{display:none}.event{grid-template-columns:1fr;gap:4px}h1{font-size:1.5rem}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -190,6 +233,40 @@ const SCRIPT = `
     const c=b.classList.toggle('sb-collapsed');try{localStorage.setItem(K,c?'1':'0')}catch(e){}sync();
   }));
   sync();
+  const dlg=document.getElementById('token-dialog');
+  if(dlg){
+    const q=s=>dlg.querySelector(s),err=q('[data-err]'),title=q('[data-title]'),help=q('[data-help]'),name=q('[name=name]'),val=q('[name=value]'),exp=q('[name=expires]'),save=q('[data-save]');
+    const toast=document.getElementById('toast');
+    const say=(m,ok)=>{toast.textContent=m;toast.className='toast '+(ok?'ok':'bad');toast.hidden=false};
+    const call=(path,method,body)=>fetch(path,{method,headers:{'Content-Type':'application/json','X-Requested-With':'max-free-tier'},body:body?JSON.stringify(body):undefined})
+      .then(r=>r.json().catch(()=>({ok:false,error:'Unexpected answer ('+r.status+')'})),()=>({ok:false,error:'Could not reach the site.'}));
+    const clear=()=>{val.value='';exp.value='';err.hidden=true;save.disabled=false;save.textContent='Verify and save'};
+    document.querySelectorAll('[data-token-open]').forEach(b=>b.addEventListener('click',()=>{
+      clear();name.value=b.dataset.tokenOpen;title.textContent=(b.dataset.mode==='replace'?'Replace ':'Add ')+b.dataset.tokenOpen;
+      const tpl=document.querySelector('template[data-help-for="'+b.dataset.tokenOpen+'"]');help.replaceChildren(tpl?tpl.content.cloneNode(true):'');
+      dlg.showModal();val.focus();
+    }));
+    dlg.addEventListener('close',clear);
+    q('[data-cancel]').addEventListener('click',()=>dlg.close());
+    q('form').addEventListener('submit',async e=>{
+      e.preventDefault();save.disabled=true;err.hidden=true;save.textContent='Verifying…';
+      const r=await call('/api/tokens','POST',{name:name.value,value:val.value,expires:exp.value||undefined});
+      val.value='';save.textContent='Verify and save';
+      if(r.ok){dlg.close();say(r.detail||'Saved.',true);setTimeout(()=>location.reload(),1400)}
+      else{err.textContent=r.error||'Could not save the token.';err.hidden=false;save.disabled=false}
+    });
+    document.querySelectorAll('[data-token-test]').forEach(b=>b.addEventListener('click',async()=>{
+      b.disabled=true;const old=b.textContent;b.textContent='Testing…';
+      const r=await call('/api/tokens/'+b.dataset.tokenTest+'/test','POST');
+      b.textContent=old;b.disabled=false;say(r.ok?b.dataset.tokenTest+': '+(r.detail||'works.'):b.dataset.tokenTest+': '+(r.error||'failed.'),!!r.ok);
+      if(r.ok)setTimeout(()=>location.reload(),1800);
+    }));
+    document.querySelectorAll('[data-token-delete]').forEach(b=>b.addEventListener('click',async()=>{
+      if(b.dataset.armed!=='1'){b.dataset.armed='1';const old=b.textContent;b.textContent='Click again to delete';setTimeout(()=>{b.dataset.armed='';b.textContent=old},4000);return}
+      b.disabled=true;const r=await call('/api/tokens/'+b.dataset.tokenDelete,'DELETE');
+      if(r.ok)location.reload();else{b.disabled=false;say(r.error||'Could not delete.',false)}
+    }));
+  }
   const t=document.getElementById('limits');if(!t)return;
   const rows=[...t.querySelectorAll('tbody tr')],count=document.getElementById('count'),empty=document.getElementById('none');
   const s={q:'',p:new Set(),c:'',f:'',t:false};
@@ -216,7 +293,7 @@ const SCRIPT = `
 
 export interface ShellOptions {
   title: string;
-  active: "limits" | "consumption";
+  active: "limits" | "consumption" | "tokens";
   body: string;
   /** "Updated 12 min ago" for the navbar. */
   updated: string;
@@ -231,7 +308,7 @@ export function shell(o: ShellOptions): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><meta name="color-scheme" content="dark"><title>${esc(o.title)} · Free-tier monitor</title><link rel="icon" href="${favicon}"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"><style>${CSS}</style></head><body>
 <header class="nav"><div class="container"><a class="brand" href="/" aria-label="Free-tier monitor home">${LOGO_SVG}<div><b>Free-tier monitor</b><span>Sarvam Tech Labs</span></div></a>
 <nav class="tabs" aria-label="Sections">${tab("/", "limits", "gauge", "Free-tier limits")}${tab("/consumption", "consumption", "users", "Consumption")}</nav>
-<div class="nav-meta">${icon("clock", 14)}<span>${esc(o.updated)} · times in ${esc(o.zone)}</span></div></div></header>
+<div class="nav-meta"><span class="stamp">${icon("clock", 14)}<span>${esc(o.updated)} · times in ${esc(o.zone)}</span></span><a class="nav-link" href="/tokens"${o.active === "tokens" ? ' aria-current="page"' : ""}>${icon("key", 16)}<span>Tokens</span></a></div></div></header>
 <main><div class="container">${o.body}</div></main>
 <footer><div class="container">Sarvam Tech Labs · read-only monitoring on free tiers · <a href="/classic">Raw 7-day table and spike detection</a></div></footer>
 <script>${SCRIPT}</script></body></html>`;

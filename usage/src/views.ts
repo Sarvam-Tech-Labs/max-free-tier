@@ -17,9 +17,11 @@ import {
 import type { DomainRow, MonitorState, UptimeView } from "./health";
 import type { ClientInfo, Ledger, LedgerProvider, Meter, Platform } from "./ledger";
 import { escapeHtml as esc } from "./page";
+import { KIND_LABEL, type ProviderKind } from "./providers";
 import type { AlertRow, CheckRun } from "./store";
 import { icon, shell } from "./theme";
 import { daysUntil, formatInstant, nextReset, relative, zoneLabel } from "./time";
+import type { RequiredToken, TokenMeta, TokensOverview } from "./tokens";
 
 /** Uptime (FlareWatch) and domain expiry: absent/empty → those cards say so. */
 export interface Health {
@@ -88,7 +90,12 @@ const updatedText = (d: PageData): string => {
   return at ? `Updated ${relative(at, d.health.now)}` : "Waiting for the first reading";
 };
 
-function page(d: PageData, title: string, active: "limits" | "consumption", body: string): string {
+function page(
+  d: PageData,
+  title: string,
+  active: "limits" | "consumption" | "tokens",
+  body: string,
+): string {
   return shell({ title, active, body, updated: updatedText(d), zone: zoneLabel(d.tz) });
 }
 
@@ -320,19 +327,20 @@ function sidebar(accounts: readonly Account[], selected: Account, d: PageData): 
   return `<aside class="card sidebar" id="accounts" aria-label="Accounts"><div class="sidebar-head"><h2>Accounts</h2><button type="button" class="btn icon-only" data-sidebar-toggle aria-controls="accounts" aria-expanded="true" aria-label="Collapse the account list" title="Collapse">${icon("panel", 16)}</button></div><nav aria-label="Email accounts">${items}</nav></aside>`;
 }
 
-function reasonNotConnected(p: Platform): string {
-  switch (p) {
-    case "cloudflare":
-      return "No Cloudflare account is linked to these projects. Add the account id to the registry to read usage live.";
-    case "vercel":
-      return "Vercel's Hobby plan gives API tokens no usage numbers, so consumption can't be read. Only “account blocked” can be monitored; the limits below are what the plan includes.";
-    case "resend":
-      return "Not connected yet. Add a Resend key to the registry to read these live (including exact reset times).";
-    case "github":
-      return "Not connected yet. Add a GitHub token with “Plan: read” to the registry to read Actions minutes live.";
-    case "supabase":
-      return "Not connected yet. Add a Supabase token (projects and database read) to the registry to read these live.";
+const HOBBY_NOTE =
+  " Vercel's Hobby plan gives API tokens no usage numbers, so consumption can't be read; only “account blocked” can be monitored. The limits below are what the plan includes.";
+
+/** Why a platform shows no numbers, as HTML. `waiting` = tokens the registry asks for that have not been added yet. */
+function notConnectedNote(p: Platform, waiting: readonly string[]): string {
+  if (p === "cloudflare") {
+    return "No Cloudflare account is linked to these projects. Add the account id to the registry to read usage live.";
   }
+  const link = '<a href="/tokens">Tokens page</a>';
+  const extra = p === "vercel" ? esc(HOBBY_NOTE) : "";
+  if (waiting.length > 0) {
+    return `Waiting for ${waiting.map((n) => `<code>${esc(n)}</code>`).join(", ")}. Paste it on the ${link} to connect.${extra}`;
+  }
+  return `Not set up yet: add a <code>usage:</code> block for ${esc(PLATFORM_NAME[p])} to the registry, then paste its token on the ${link}.${extra}`;
 }
 
 function nextResetCell(
@@ -370,6 +378,7 @@ function platformSection(
   cat: PlatformCatalog,
   cards: readonly LedgerProvider[],
   d: PageData,
+  waiting: readonly string[],
 ): string {
   const connected = cards.length > 0;
   const head = `<div class="section-head"><h2>${esc(cat.name)}</h2>${badge(`${cat.plan} plan`, "mute")}<span class="grow"></span>${connected ? badge("Connected", "ok") : badge("Not connected", "warn")}</div>`;
@@ -389,7 +398,7 @@ function platformSection(
       )
       .join("");
     // Collapsed: nothing is measured here, so the list of what the plan includes must not push real data off the page.
-    return `<section class="card" aria-label="${esc(cat.name)}">${head}<div class="note" style="margin-bottom:0">${icon("plug", 18)}<div>${esc(reasonNotConnected(cat.id))}</div></div><details style="margin-top:12px"><summary>${icon("chevron", 14).replace('class="icon"', 'class="icon chev"')}What the free plan includes (${cat.items.length} limits)</summary><div class="table-wrap" style="margin-top:12px"><table class="compact"><thead><tr><th>Limit</th><th>Included</th><th>Next reset</th><th>Resets</th></tr></thead><tbody>${rows}</tbody></table></div></details></section>`;
+    return `<section class="card" aria-label="${esc(cat.name)}">${head}<div class="note" style="margin-bottom:0">${icon("plug", 18)}<div>${notConnectedNote(cat.id, waiting)}</div></div><details style="margin-top:12px"><summary>${icon("chevron", 14).replace('class="icon"', 'class="icon chev"')}What the free plan includes (${cat.items.length} limits)</summary><div class="table-wrap" style="margin-top:12px"><table class="compact"><thead><tr><th>Limit</th><th>Included</th><th>Next reset</th><th>Resets</th></tr></thead><tbody>${rows}</tbody></table></div></details></section>`;
   }
 
   const groups = cards
@@ -519,10 +528,19 @@ export function renderConsumptionPage(d: PageData, email?: string): string {
   )
     .map((p) => {
       const cat = CATALOG.find((c) => c.id === p) as PlatformCatalog;
+      const ids = new Set(selected.clients.map((c) => c.id));
+      const waiting = [
+        ...new Set(
+          d.ledger.data.targets
+            .filter((x) => ids.has(x.clientId) && x.platform === p)
+            .map((x) => x.token),
+        ),
+      ];
       return platformSection(
         cat,
         cards.filter((c) => c.platform === p),
         d,
+        waiting,
       );
     })
     .join("");
@@ -540,4 +558,153 @@ export function renderConsumptionPage(d: PageData, email?: string): string {
 
   const body = `<div class="layout">${sidebar(accounts, selected, d)}<div class="stack" style="min-width:0">${who}${statusStrip(selected, d)}${sections || `<div class="card empty">No platform is on file for this account.</div>`}${unmonitored.length > 0 ? `<p class="muted small">Also uses ${unmonitored.map(esc).join(", ")}, which are not monitored.</p>` : ""}</div></div>`;
   return page(d, title, "consumption", body);
+}
+
+// ───────────────────────────── Tokens page ─────────────────────────────
+
+const KIND_HELP: Readonly<Record<ProviderKind, { url: string; scope: string }>> = {
+  github: {
+    url: "https://github.com/settings/personal-access-tokens/new",
+    scope:
+      "A fine-grained token created by the account that owns the repositories. Account permission “Plan: read”; no repository access is needed.",
+  },
+  resend: {
+    url: "https://resend.com/api-keys",
+    scope:
+      "An API key with “Full access” (Resend has no read-only key). Create one just for this and revoke it any time.",
+  },
+  supabase: {
+    url: "https://supabase.com/dashboard/account/tokens",
+    scope: "A scoped access token with read access to projects and to the database.",
+  },
+  vercel: {
+    url: "https://vercel.com/account/tokens",
+    scope:
+      "A token scoped to the team. Hobby teams expose no usage numbers, so this only detects “account blocked”.",
+  },
+};
+
+type TokenState =
+  | { kind: "missing" }
+  | { kind: "saved" }
+  | { kind: "working"; at: string }
+  | { kind: "failing"; error: string };
+
+function stateOf(name: string, o: TokensOverview): TokenState {
+  const checks = o.status.filter((s) => s.token === name);
+  const known = o.managed.some((m) => m.name === name) || o.secretNames.includes(name);
+  if (!known) return { kind: "missing" };
+  const bad = checks.find((s) => !s.ok);
+  if (bad) return { kind: "failing", error: bad.error ?? "unknown error" };
+  const at = checks
+    .filter((s) => s.ok)
+    .map((s) => s.checkedAt)
+    .sort()
+    .at(-1);
+  return at ? { kind: "working", at } : { kind: "saved" };
+}
+
+function usedFor(r: RequiredToken, ledger: Ledger): string {
+  const names = new Map(ledger.data.clients.map((c) => [c.id, c.name]));
+  return r.targets
+    .map((t) => {
+      const what = t.account ?? t.projects?.join(", ") ?? "";
+      return `<div>${esc(names.get(t.id) ?? t.client)}${what ? ` <span class="muted small">· ${esc(what)}</span>` : ""}</div>`;
+    })
+    .join("");
+}
+
+function expiryCell(m: TokenMeta | undefined, d: PageData): string {
+  if (!m?.expiresAt) return `<span class="muted">No expiry set</span>`;
+  const days = daysUntil(m.expiresAt, d.health.now);
+  const t = formatInstant(m.expiresAt, d.tz);
+  const kind = days < 0 ? "bad" : days <= 14 ? "warn" : "";
+  const label =
+    days < 0 ? "Expired" : days <= 14 ? `Expires in ${days} day${days === 1 ? "" : "s"}` : "";
+  return `<div title="${esc(t.utc)}">${esc(t.text.split(", ")[0] ?? "")}</div><div class="small ${kind ? "" : "muted"}">${kind ? badge(label, kind) : esc(relative(m.expiresAt, d.health.now))}</div>`;
+}
+
+function statusCell(s: TokenState, d: PageData): string {
+  switch (s.kind) {
+    case "missing":
+      return `${badge("Missing", "warn")}<div class="muted small">Not connected yet</div>`;
+    case "saved":
+      return `${badge("Saved", "mute")}<div class="muted small">First check within the hour</div>`;
+    case "working":
+      return `${badge("Working", "ok")}<div class="muted small">Checked ${esc(relative(s.at, d.health.now))}</div>`;
+    case "failing":
+      return `${badge("Failing", "bad")}<div class="small" style="color:#fca5a5;max-width:280px;overflow-wrap:anywhere">${esc(s.error)}</div>`;
+  }
+}
+
+export function renderTokensPage(d: PageData, o: TokensOverview): string {
+  const off = !o.enabled;
+  const disabled = off ? ' disabled title="Set the TOKEN_ENCRYPTION_KEY secret first"' : "";
+  const required = new Set(o.required.map((r) => r.name));
+
+  const rows = o.required
+    .map((r) => {
+      const m = o.managed.find((x) => x.name === r.name);
+      const fromSecret = !m && o.secretNames.includes(r.name);
+      const state = stateOf(r.name, o);
+      const added = m
+        ? `ends …${esc(m.last4)} · added ${esc(formatInstant(m.createdAt, d.tz).text.split(", ")[0] ?? "")}`
+        : fromSecret
+          ? "from the deployment secret"
+          : "";
+      const btn = (attrs: string, ico: Parameters<typeof icon>[0], label: string, cls = "") =>
+        `<button type="button" class="btn small ${cls}" ${attrs}${disabled}>${icon(ico, 14)}${label}</button>`;
+      const actions =
+        state.kind === "missing"
+          ? btn(`data-token-open="${esc(r.name)}" data-mode="add"`, "key", "Add token", "primary")
+          : [
+              btn(`data-token-open="${esc(r.name)}" data-mode="replace"`, "key", "Replace"),
+              btn(`data-token-test="${esc(r.name)}"`, "refresh", "Test"),
+              m ? btn(`data-token-delete="${esc(r.name)}"`, "trash", "Delete", "danger") : "",
+            ].join("");
+      return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${added ? `<div class="muted small">${added}</div>` : ""}</td><td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td><td data-label="Used for">${usedFor(r, d.ledger)}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
+    })
+    .join("");
+
+  const others = o.managed.filter((m) => !required.has(m.name));
+  const otherRows = others
+    .map(
+      (m) =>
+        `<tr><td data-label="Token"><code>${esc(m.name)}</code><div class="muted small">ends …${esc(m.last4)}</div></td><td data-label="Note" class="muted">No client in the registry uses this name any more</td><td data-label=""><button type="button" class="btn small danger" data-token-delete="${esc(m.name)}"${disabled}>${icon("trash", 14)}Delete</button></td></tr>`,
+    )
+    .join("");
+
+  const helps = o.required
+    .map((r) => {
+      const h = KIND_HELP[r.kind];
+      return `<template data-help-for="${esc(r.name)}"><p><b>${esc(KIND_LABEL[r.kind])}</b> · for ${r.targets.map((t) => esc(t.client)).join(", ")}</p><p>${esc(h.scope)}</p><p><a href="${esc(h.url)}" target="_blank" rel="noopener noreferrer">Create it on ${esc(KIND_LABEL[r.kind])} ↗</a></p></template>`;
+    })
+    .join("");
+
+  const dialog = `<dialog id="token-dialog" aria-labelledby="token-title"><form method="dialog" autocomplete="off">
+<h2 id="token-title" data-title>Add token</h2>
+<div class="help" data-help></div>
+<input type="hidden" name="name">
+<div class="field"><label for="token-value">Token</label><input id="token-value" name="value" type="password" autocomplete="new-password" spellcheck="false" data-1p-ignore data-lpignore="true" required minlength="8" placeholder="Paste the token here"><span class="hint">It is checked against the platform, encrypted, and never shown again.</span></div>
+<div class="field"><label for="token-expires">Expires on (optional)</label><input id="token-expires" name="expires" type="date"><span class="hint">The date you chose when creating it, so you are warned in time. GitHub's is read automatically.</span></div>
+<div class="form-error" role="alert" data-err hidden></div>
+<div class="dialog-actions"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" data-save>Verify and save</button></div>
+</form></dialog><div id="toast" class="toast" role="status" aria-live="polite" hidden></div>`;
+
+  const body = `<div class="page-head"><h1>Tokens</h1><p class="lead">The access tokens the monitor uses to read your platforms. Paste them here: they are verified, encrypted and never shown again.</p></div>
+<div class="stack">
+${off ? `<div class="note bad">${icon("alert", 18)}<div><b>Token storage is not enabled.</b> Set the <code>TOKEN_ENCRYPTION_KEY</code> secret and redeploy to add tokens here. Tokens set in the deployment secret keep working.</div></div>` : ""}
+<section class="card" aria-label="Tokens the registry needs"><div class="card-head"><h2>Needed by the registry</h2></div>
+${rows === "" ? `<div class="empty">No client in the registry has a <code>usage:</code> block, so no token is needed yet.</div>` : `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Platform</th><th>Used for</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`}
+</section>
+${others.length > 0 ? `<section class="card" aria-label="Other saved tokens"><div class="card-head"><h2>Other saved tokens</h2></div><div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Note</th><th>Actions</th></tr></thead><tbody>${otherRows}</tbody></table></div></section>` : ""}
+<section class="card" aria-label="How tokens are kept"><div class="card-head"><span class="tile">${icon("shield", 22)}</span><h2>How tokens are kept</h2></div>
+<ul class="muted" style="margin:0;padding-left:20px;display:grid;gap:6px">
+<li>Encrypted (AES-256-GCM) before they are stored. The key is a separate secret, never in the database.</li>
+<li>Never shown again: this page only knows the last four characters. Replace a token by pasting a new one.</li>
+<li>Verified against the platform before saving, then checked every hour. A Telegram alert follows if one fails twice in a row or expires within 14 days.</li>
+<li>Anyone with the site password can add, replace or delete tokens, but cannot read them. Prefer read-only tokens where the platform offers them.</li>
+</ul></section>
+</div>${helps}${dialog}`;
+  return page(d, "Tokens", "tokens", body);
 }

@@ -8,6 +8,7 @@ import { FREE_PLAN_LIMITS, type Limit, parseLimits } from "./limits";
 import { KIND_LABEL, type ProviderKind, type ProviderTarget, parseProviders } from "./providers";
 import { accountKey, addDays, isoDate, parseAccounts, parseLabels } from "./run";
 import { loadReadings, loadTotals, type ReadingRow, sumByMetric } from "./store";
+import { loadTargetStatus, type TargetStatusRow, targetKey } from "./tokens";
 
 export interface Period {
   start: string;
@@ -64,6 +65,7 @@ export interface Ledger {
     project: string;
     providers: LedgerProvider[];
     clients: ClientInfo[];
+    targets: Array<{ clientId: string; platform: ProviderKind; token: string }>;
   };
 }
 
@@ -220,13 +222,17 @@ function unitFor(metric: string): Meter["unit"] {
 function targetProvider(
   t: ProviderTarget,
   rows: readonly ReadingRow[],
+  status: TargetStatusRow | undefined,
   now: Date,
   today: string,
 ): LedgerProvider | null {
-  if (rows.length === 0) return null; // no successful check yet
+  // No reading and no recorded check: the token was never added. A recorded check means "connected", even with
+  // nothing to show (Vercel Hobby has no numbers) or with the latest check failing.
+  if (rows.length === 0 && !status) return null;
   const month = monthPeriod(today);
   const day = dayPeriod(today);
   const notes = rows.filter((r) => r.note !== null).map((r) => r.note as string);
+  if (status && !status.ok) notes.push(`Latest check failed: ${status.error ?? "unknown error"}`);
   const metrics = rows
     .filter((r) => r.note === null)
     .map((r): Meter => {
@@ -264,11 +270,14 @@ export async function buildLedger(env: Env, now: Date = new Date()): Promise<Led
   const clients = parseClients(env.CLIENTS_JSON);
   const cf = await cloudflareProviders(env, today, clients);
   const readings = await loadReadings(env.USAGE);
-  const others = safeTargets(env.PROVIDERS_JSON)
+  const statuses = new Map((await loadTargetStatus(env.USAGE)).map((s) => [s.target, s]));
+  const targets = safeTargets(env.PROVIDERS_JSON);
+  const others = targets
     .map((t) =>
       targetProvider(
         t,
-        readings.filter((r) => r.target === `${t.kind}:${t.id}`),
+        readings.filter((r) => r.target === targetKey(t)),
+        statuses.get(targetKey(t)),
         now,
         today,
       ),
@@ -280,6 +289,8 @@ export async function buildLedger(env: Env, now: Date = new Date()): Promise<Led
       project: env.ORG_NAME?.trim() || "max-free-tier",
       providers: [...cf, ...others],
       clients,
+      // Which token each client's platform is waiting for (names only), for the "not connected" hints.
+      targets: targets.map((t) => ({ clientId: t.id, platform: t.kind, token: t.token })),
     },
   };
 }

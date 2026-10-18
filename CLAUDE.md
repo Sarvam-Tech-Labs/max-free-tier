@@ -10,7 +10,8 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 - **Deploys never run in this public repo.** `uptime.yml` / `usage.yml` are reusable (`workflow_call`) and run from the
   private registry repo's `deploy.yml` (`secrets: inherit`): wrangler prints vars (client names, account ids) and public
   Actions logs are public. Never add a push/dispatch trigger to them here.
-- **No secrets in git.** Tokens live in GitHub Actions secrets and Worker secrets.
+- **No secrets in git.** Tokens live in GitHub Actions secrets, Worker secrets, and (platform tokens) encrypted in D1 via the
+  site's Tokens page (`usage/src/tokens.ts`, key = TOKEN_ENCRYPTION_KEY). Never ask the user to paste a token into chat.
 - **Reuse before building.** FlareWatch and usage-guard-collector are vendored `git subtree`s; urlwatch is installed.
   Fix gaps upstream-first (`docs/UPSTREAM.md`); keep our own code to the registry, generator and glue.
 - Client Cloudflare accounts belong to the clients: read-only analytics access only.
@@ -19,7 +20,7 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 1. **Find it** in the private registry: platforms, Cloudflare account, repos, `local:` folder. Read that project's docs.
 2. **Down or broken?** Status page / Telegram alert text (status code, missing keyword, SSL/domain warning).
    Reproduce: `curl -sS -o /dev/null -w '%{http_code}' <url>`.
-3. **Free-tier limit?** The site (usage Worker: `/` Free-tier limits + change history, `/consumption?email=` per owner, `/classic` spikes; needs DASHBOARD_PASSWORD) or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
+3. **Free-tier limit?** The site (usage Worker: `/` Free-tier limits + change history, `/consumption?email=` per owner, `/tokens` paste/test/delete platform tokens, `/classic` spikes; needs DASHBOARD_PASSWORD) or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
    (`usage/src/limits.ts` has the cited numbers).
 4. **Logs:** Cloudflare → Workers & Pages → the Worker → Logs, or `npx wrangler tail` in the project.
 5. **Not on Cloudflare** (Vercel, Supabase, Firebase, Resend, GitHub Actions): clients with a registry `usage:` block

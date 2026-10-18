@@ -13,8 +13,8 @@
 # domains: registrable domains; FlareWatch checks their registration (RDAP) daily and warns 30 days before expiry.
 # monitors: HTTP checks every minute. keyword = text the page must contain (catches "200 but broken");
 #         expect = accepted status codes (default [200]).
-# usage: free-plan checks on other platforms, hourly, alerts at the same 50/80/95% levels. `token` is the NAME of a key
-#         in the PROVIDER_TOKENS secret (JSON {"GH_ACME": "github_pat_…"}), never the token itself.
+# usage: free-plan checks on other platforms, hourly, alerts at the same 50/80/95% levels. `token` is only a NAME (e.g. GH_ACME), never the
+#         token itself: paste the token on the site's Tokens page, which lists every name the registry asks for.
 #         github:   Actions minutes vs 2,000/month. account = user or org login (org: true). Fine-grained PAT created BY
 #                   that account, permission Plan: read (orgs: Administration: read). No repository access needed.
 #         resend:   every quota (emails/day, emails/month, domains, contacts…) with Resend's own limits. Resend has no

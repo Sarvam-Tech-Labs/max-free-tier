@@ -70,7 +70,9 @@ describe("parseProviders / parseTokens", () => {
 describe("checkTarget", () => {
   it("missing token → rejects without any call", async () => {
     const { f, calls } = stub({});
-    await expect(checkTarget(gh, {}, NOW, LEVELS, f)).rejects.toThrow(/token GH missing/);
+    await expect(checkTarget(gh, {}, NOW, LEVELS, f)).rejects.toThrow(
+      /token GH is not set \(add it on the site's Tokens page\)/,
+    );
     expect(calls).toHaveLength(0);
   });
 
@@ -258,12 +260,23 @@ describe("runProviders", () => {
     expect(msg).toContain("github.actions_minutes: 1,100 of 2,000 per month (55%)");
     expect(msg).not.toContain("gh-secret");
 
+    // Same level again: no repeat of the limit alert. Vercel has now failed twice in a row, so the one message
+    // that does go out is the token alert.
     const again = stub({ ...minutes(1200), ...vercelDown });
     expect((await runProviders(e, NOW, again.f)).notified).toBe(0);
-    expect(again.calls.some((c) => c.url.includes("telegram"))).toBe(false);
+    const sent = (s: ReturnType<typeof stub>) =>
+      s.calls
+        .filter((c) => c.url.includes("telegram"))
+        .map((c) => JSON.parse(String(c.init.body)).text as string);
+    expect(sent(again)).toHaveLength(1);
+    expect(sent(again)[0]).toContain("keeps failing");
+    expect(sent(again)[0]).not.toContain("github.actions_minutes");
 
+    // A higher level alerts again; the token alert is not repeated within a day.
     const higher = stub({ ...minutes(1700), ...vercelDown });
     expect((await runProviders(e, NOW, higher.f)).notified).toBe(1);
+    expect(sent(higher)).toHaveLength(1);
+    expect(sent(higher)[0]).toContain("github.actions_minutes");
   });
 
   it("failed notification → not marked, so the next run retries", async () => {

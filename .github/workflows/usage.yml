@@ -4,7 +4,10 @@
 # Caller secrets (secrets: inherit):
 #          CLOUDFLARE_API_TOKEN (Workers Scripts: Edit + D1: Edit on the account the tools run in), CLOUDFLARE_ACCOUNT_ID,
 #          USAGE_CF_API_TOKEN (Account Analytics: Read on every client account), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-#          PROVIDER_TOKENS (optional: JSON {"KEY": "token"} for the registry's usage.* blocks — GitHub/Resend/Supabase/Vercel),
+#          TOKEN_ENCRYPTION_KEY (32 random bytes, base64: encrypts tokens pasted on the site's Tokens page; without it that
+#          page is read-only),
+#          PROVIDER_TOKENS (optional, legacy: JSON {"KEY": "token"} for the registry's usage.* blocks; tokens pasted on the
+#          site take precedence),
 #          DASHBOARD_PASSWORD (optional: turns on the password-protected site; without it every page is 404),
 #          INGEST_TOKEN (optional: lets the daily terms/limits jobs report to the site's Activity page; same value as the
 #          INGEST_TOKEN secret in the repo that runs freetier-watch.yml).
@@ -99,7 +102,8 @@ jobs:
           PROVIDER_TOKENS: ${{ secrets.PROVIDER_TOKENS }}
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
         run: |
-          for s in CF_API_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PROVIDER_TOKENS DASHBOARD_PASSWORD INGEST_TOKEN; do
+          for s in CF_API_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PROVIDER_TOKENS DASHBOARD_PASSWORD INGEST_TOKEN TOKEN_ENCRYPTION_KEY; do
             if [ -n "${!s}" ]; then printf '%s' "${!s}" | pnpm exec wrangler secret put "$s" --config wrangler.generated.jsonc; else echo "skip $s (not set)"; fi
           done

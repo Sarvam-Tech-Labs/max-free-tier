@@ -15,9 +15,11 @@ import { renderPage, type Section } from "./page";
 import {
   checkTarget,
   KIND_LABEL,
+  MISSING_TOKEN,
   type ProviderTarget,
   parseProviders,
   parseTokens,
+  type TokenInfo,
 } from "./providers";
 import { parseThresholds, spike } from "./spike";
 import {
@@ -34,6 +36,13 @@ import {
   sumByMetric,
   upsertRows,
 } from "./store";
+import {
+  loadManagedTokens,
+  saveTargetStatus,
+  setReportedExpiry,
+  targetKey,
+  tokenAlerts,
+} from "./tokens";
 
 export const HISTORY_DAYS = 7;
 
@@ -252,23 +261,41 @@ export async function runProviders(
   } catch (e) {
     return finish(env, "providers", summary, [message(e)], now.toISOString());
   }
+  // Tokens pasted into the site win over the deployment secret of the same name.
+  try {
+    const managed = await loadManagedTokens(env);
+    tokens = { ...tokens, ...managed.tokens };
+    errors.push(...managed.errors);
+  } catch (e) {
+    errors.push(`saved tokens: ${message(e)}`);
+  }
 
   const collectedAt = now.toISOString();
   const sections: Array<ReportSection & { key: string }> = [];
   for (const t of targets) {
     const label = `${t.client} · ${KIND_LABEL[t.kind]}`;
+    const key = targetKey(t);
+    const info: TokenInfo = {};
     try {
-      const statuses = await checkTarget(t, tokens, now, levels, fetchImpl);
+      const statuses = await checkTarget(t, tokens, now, levels, fetchImpl, info);
       const crossed = statuses.filter((s) => s.level !== null).length;
       if (crossed > 0) summary.limitAlerts = (summary.limitAlerts ?? 0) + crossed;
-      const key = `${t.kind}:${t.id}`;
-      await saveReadings(env.USAGE, key, statuses, collectedAt); // for the overview page
+      await saveReadings(env.USAGE, key, statuses, collectedAt); // for the site
+      await saveTargetStatus(env.USAGE, key, t.token, true, null, collectedAt);
+      if (info.expiresAt) await setReportedExpiry(env.USAGE, t.token, info.expiresAt);
       const fresh = await filterUnnotifiedLimits(env.USAGE, key, statuses);
       if (fresh.length > 0) sections.push({ key, label, spikes: [], limits: fresh });
     } catch (e) {
       errors.push(`${label}: ${message(e)}`);
+      // A token that was never added is "not connected", not a failing token: it must not raise alerts.
+      if (!message(e).includes(MISSING_TOKEN)) {
+        await saveTargetStatus(env.USAGE, key, t.token, false, message(e), collectedAt).catch(
+          () => {},
+        );
+      }
     }
   }
+  errors.push(...(await tokenAlerts(env, now, fetchImpl)));
 
   if (sections.length > 0) {
     try {

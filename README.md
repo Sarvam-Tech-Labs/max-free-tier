@@ -60,6 +60,9 @@ One password-protected website, two tabs, in the Sarvam Tech Labs design system:
   Resend, GitHub, Supabase), how much of each limit is consumed, the exact date and time it resets (IST, UTC on hover) and
   how often it resets, plus whether their sites are up and when their domains expire.
 
+- **Tokens** — paste, test and delete the platform tokens the monitor needs, right on the site (verified, encrypted, never
+  shown again), with a warning before one fails or expires.
+
 Telegram only pushes alerts to your phone; the site is where you look.
 
 Not covered, because Vercel Hobby and Supabase Free show them only in their logged-in dashboards (no API token can
