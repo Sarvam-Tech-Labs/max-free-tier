@@ -466,7 +466,9 @@ describe("tab 2: consumption", () => {
     expect(html).toContain("Not connected");
     expect(html).toContain("Vercel's Hobby plan"); // apostrophes are not escaped
     // Collapsed by default, so the list of what the plan includes cannot push real data off the page.
-    expect(html).toMatch(/<details[^>]*><summary>[^]*?What the free plan includes \(11 limits\)/);
+    expect(html).toMatch(
+      /<details[^>]*><summary>[\s\S]*?What the free plan includes \(11 limits\)/,
+    );
     expect(html).not.toMatch(/<details open/);
     expect(html).toContain("Fast Data Transfer");
     expect(html).toContain("100 GB / month");
