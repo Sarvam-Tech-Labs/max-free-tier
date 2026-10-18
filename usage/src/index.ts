@@ -5,16 +5,21 @@
  * fetch(): the overview page. Without the DASHBOARD_PASSWORD secret everything is 404 (the page lists every client's
  * usage); with it, HTTP Basic is required:
  *   /            the overview (public/index.html, adapted from free-tier-maxxer) → /data.js, /series.js (ledger.ts)
+ *   /clients     consumption per client, found by email (views.ts)
+ *   /platforms   every free allowance per platform + each client's consumption (views.ts, catalog.ts)
  *   /classic     the original 7-day table with spikes
  */
 import { authorized } from "./auth";
 import type { Env } from "./env";
 import { buildLedger, dataJs, seriesJs } from "./ledger";
 import { PROVIDERS_CRON, renderIndex, runCollect, runProviders } from "./run";
+import { renderClientsPage, renderPlatformsPage } from "./views";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 const NOT_FOUND = () => new Response("Not found", { status: 404 });
 const JS = { "Content-Type": "application/javascript; charset=utf-8", ...NO_STORE };
+const html = (body: string) =>
+  new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE } });
 
 export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -53,10 +58,12 @@ export default {
         return new Response(dataJs(await buildLedger(env)), { headers: JS });
       case "/series.js":
         return new Response(seriesJs(await buildLedger(env)), { headers: JS });
+      case "/clients":
+        return html(renderClientsPage(await buildLedger(env), url.searchParams.get("q") ?? ""));
+      case "/platforms":
+        return html(renderPlatformsPage(await buildLedger(env)));
       case "/classic":
-        return new Response(await renderIndex(env), {
-          headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE },
-        });
+        return html(await renderIndex(env));
       default:
         return NOT_FOUND();
     }

@@ -6,7 +6,7 @@
  */
 import type { Env } from "./env";
 import { FREE_PLAN_LIMITS, type Limit, parseLimits } from "./limits";
-import { KIND_LABEL, type ProviderTarget, parseProviders } from "./providers";
+import { KIND_LABEL, type ProviderKind, type ProviderTarget, parseProviders } from "./providers";
 import { accountKey, addDays, isoDate, parseAccounts, parseLabels } from "./run";
 import { loadReadings, loadTotals, type ReadingRow, sumByMetric } from "./store";
 
@@ -28,8 +28,24 @@ export interface Meter {
   note?: string;
 }
 
+export type Platform = ProviderKind | "cloudflare";
+
+/** One client of the registry (CLIENTS_JSON). `email` identifies the client on the by-client page. */
+export interface ClientInfo {
+  id: string;
+  name: string;
+  email?: string;
+  status: string;
+  platforms: string[];
+  /** Cloudflare account ids of this client. */
+  accounts: string[];
+}
+
 export interface LedgerProvider {
   id: string;
+  /** Which platform this card measures, and which client it belongs to (absent for an account not in the registry). */
+  platform: Platform;
+  clientId?: string;
   name: string;
   account: string;
   plan: string;
@@ -49,7 +65,12 @@ export interface SeriesPoint {
 }
 
 export interface Ledger {
-  data: { generatedAt: string; project: string; providers: LedgerProvider[] };
+  data: {
+    generatedAt: string;
+    project: string;
+    providers: LedgerProvider[];
+    clients: ClientInfo[];
+  };
   series: SeriesPoint[];
 }
 
@@ -127,9 +148,28 @@ function safeLabels(json: string | undefined): Record<string, string> {
   }
 }
 
+/** CLIENTS_JSON → clients. Missing or invalid → [] (the by-client page then groups what it can). */
+export function parseClients(json: string | undefined): ClientInfo[] {
+  try {
+    const parsed: unknown = JSON.parse(json || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((c): c is ClientInfo => typeof c?.id === "string" && typeof c?.name === "string")
+      .map((c) => ({
+        ...c,
+        platforms: Array.isArray(c.platforms) ? c.platforms : [],
+        accounts: Array.isArray(c.accounts) ? c.accounts : [],
+        status: typeof c.status === "string" ? c.status : "live",
+      }));
+  } catch {
+    return [];
+  }
+}
+
 async function cloudflareProviders(
   env: Env,
   today: string,
+  clients: readonly ClientInfo[],
 ): Promise<{ providers: LedgerProvider[]; series: SeriesPoint[] }> {
   const accounts = parseAccounts(env.CF_ACCOUNT_ID);
   const labels = safeLabels(env.ACCOUNT_LABELS_JSON);
@@ -177,9 +217,13 @@ async function cloudflareProviders(
         });
       }
     }
+    const owner = clients.find((c) => c.accounts.includes(id));
+    const ownerName = owner?.name ?? labels[id];
     providers.push({
       id: pid,
-      name: labels[id] ? `${labels[id]} · Cloudflare` : "Cloudflare",
+      platform: "cloudflare",
+      ...(owner ? { clientId: owner.id } : {}),
+      name: ownerName ? `${ownerName} · Cloudflare` : "Cloudflare",
       account: id,
       plan: "Workers Free",
       source: "official",
@@ -225,6 +269,8 @@ function targetProvider(
     });
   return {
     id: `${t.kind}-${t.id}`,
+    platform: t.kind,
+    clientId: t.id,
     name: `${t.client} · ${KIND_LABEL[t.kind]}`,
     account: t.account ?? t.projects?.join(", ") ?? "team",
     plan: "Free",
@@ -239,7 +285,8 @@ function targetProvider(
 
 export async function buildLedger(env: Env, now: Date = new Date()): Promise<Ledger> {
   const today = isoDate(now);
-  const cf = await cloudflareProviders(env, today);
+  const clients = parseClients(env.CLIENTS_JSON);
+  const cf = await cloudflareProviders(env, today, clients);
   const readings = await loadReadings(env.USAGE);
   const others = safeTargets(env.PROVIDERS_JSON)
     .map((t) =>
@@ -256,6 +303,7 @@ export async function buildLedger(env: Env, now: Date = new Date()): Promise<Led
       generatedAt: now.toISOString(),
       project: env.ORG_NAME?.trim() || "max-free-tier",
       providers: [...cf.providers, ...others],
+      clients,
     },
     series: cf.series,
   };

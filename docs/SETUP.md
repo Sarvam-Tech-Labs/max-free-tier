@@ -86,7 +86,9 @@ answers **404 until you set the `DASHBOARD_PASSWORD` secret**, then requires it 
 ```bash
 gh secret set DASHBOARD_PASSWORD --repo $R   # a long random value; redeploy to apply
 ```
-`/classic` is the original 7-day table with spike detection. No Cloudflare Access / Zero Trust is needed. The FlareWatch
+Four views: `/` (what runs out first, with charts), `/clients` (one row per client, found by the `email:` in the
+registry, with every meter), `/platforms` (every free allowance per platform with its source, and each client's share),
+and `/classic` (the original 7-day table with spike detection). No Cloudflare Access / Zero Trust is needed. The FlareWatch
 status page is private behind its own password.
 
 ## 8. Also turn on (no code)

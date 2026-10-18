@@ -20,6 +20,8 @@ export interface Env {
   DASHBOARD_PASSWORD?: string;
   /** Static assets binding serving public/index.html (the overview page). */
   ASSETS?: Fetcher;
+  /** JSON array of the registry's clients (id, name, email, status, platforms, Cloudflare accounts) for the by-client page. */
+  CLIENTS_JSON?: string;
   /** Shown in the overview page's title. */
   ORG_NAME?: string;
   DISCORD_WEBHOOK_URL?: string;

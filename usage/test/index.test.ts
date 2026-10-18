@@ -259,6 +259,18 @@ describe("renderIndex / fetch handler", () => {
     expect(html).toContain("<code>kv.read</code>");
     expect(html).toContain("Last collected 2026-09-14T01:00:00Z");
 
+    const clients = await get("/clients?q=zzz");
+    expect(clients.status).toBe(200);
+    expect(clients.headers.get("Cache-Control")).toBe("no-store");
+    expect(await clients.text()).toContain("No client matches “zzz”");
+    const platforms = await get("/platforms");
+    expect(platforms.status).toBe(200);
+    expect(await platforms.text()).toContain("Free-tier limits by platform");
+    for (const path of ["/clients", "/platforms"]) {
+      const anon = await worker.fetch(new Request(`https://x.test${path}`), e, ctx);
+      expect(anon.status).toBe(401); // the new pages are behind the same password
+    }
+
     expect((await get("/other")).status).toBe(404);
     // No ASSETS binding → the overview page cannot be served.
     const noAssets = env({ DASHBOARD_PASSWORD: PASSWORD });

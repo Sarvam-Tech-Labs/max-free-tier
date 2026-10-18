@@ -23,11 +23,19 @@ export function load(text) {
   const clients = doc?.clients;
   if (!Array.isArray(clients) || clients.length === 0) throw new Error("clients.yaml: `clients` must be a non-empty list");
   const ids = new Set();
+  const emails = new Set();
   for (const c of clients) {
     if (!c?.id || !/^[a-z0-9-]+$/.test(c.id)) throw new Error(`clients.yaml: bad id ${JSON.stringify(c?.id)} (a-z, 0-9, -)`);
     if (ids.has(c.id)) throw new Error(`clients.yaml: duplicate id ${c.id}`);
     ids.add(c.id);
     if (!c.name) throw new Error(`clients.yaml: ${c.id} has no name`);
+    // The email identifies the client on the overview page (search by email), so it must be unique when present.
+    if (c.email !== undefined) {
+      if (typeof c.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email)) throw new Error(`clients.yaml: ${c.id} email must be an email address`);
+      const key = c.email.toLowerCase();
+      if (emails.has(key)) throw new Error(`clients.yaml: email ${c.email} is used by two clients (it identifies one client)`);
+      emails.add(key);
+    }
     if (!STATUSES.has(c.status)) throw new Error(`clients.yaml: ${c.id} status must be live | unconfirmed | paused`);
     const acct = c.cloudflare?.account_id;
     if (acct !== undefined && !/^[0-9a-f]{32}$/.test(acct)) throw new Error(`clients.yaml: ${c.id} cloudflare.account_id must be 32 hex chars`);
@@ -53,6 +61,20 @@ export function load(text) {
 // Platforms the usage collector checks besides Cloudflare (usage/src/providers.ts).
 const KINDS = ["github", "resend", "supabase", "vercel"];
 const PROVIDERS_CRON = "30 * * * *"; // = PROVIDERS_CRON in usage/src/run.ts
+
+/** Every non-paused client with its email and Cloudflare account, for the overview page's by-client view (CLIENTS_JSON). */
+export function clientsInfo(clients) {
+  return clients
+    .filter((c) => c.status !== "paused")
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      ...(c.email ? { email: c.email.toLowerCase() } : {}),
+      status: c.status,
+      platforms: c.platforms ?? [],
+      accounts: c.cloudflare?.account_id ? [c.cloudflare.account_id] : [],
+    }));
+}
 
 /** Other-platform targets of live clients, for PROVIDERS_JSON. Token *names* only; the tokens are a secret. */
 export function providers(clients) {
@@ -161,6 +183,7 @@ export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
       LIMIT_LEVELS: "50,80,95",
       THRESHOLDS_JSON: "",
       ORG_NAME: org.name,
+      CLIENTS_JSON: JSON.stringify(clientsInfo(clients)),
       ...(targets.length > 0 ? { PROVIDERS_JSON: JSON.stringify(targets) } : {}),
     },
   };

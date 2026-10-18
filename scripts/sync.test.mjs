@@ -1,7 +1,7 @@
 // pnpm test — the registry is the only thing people edit, so its validation and generation are what can break.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_ORG, groups, load, loadOrg, monitors, render, usageConfig } from "./sync.mjs";
+import { clientsInfo, DEFAULT_ORG, groups, load, loadOrg, monitors, render, usageConfig } from "./sync.mjs";
 
 const yaml = (body) => `clients:\n${body}`;
 const ACCT = "0123456789abcdef0123456789abcdef";
@@ -105,6 +105,27 @@ test("usage: other platforms of live clients become PROVIDERS_JSON + a :30 cron;
   assert.throws(bad("{ resend: { token: re_live_123 } }"), /must name a key/);
   assert.throws(bad("{ github: { token: GH } }"), /needs account/);
   assert.throws(bad("{ supabase: { token: SB, projects: [] } }"), /project refs/);
+});
+
+test("email identifies a client: optional, must look like an email, unique case-insensitively; non-paused clients go to CLIENTS_JSON", () => {
+  const bad = (a, b = "") => () => load(yaml(`  - { id: a, name: A, status: live${a} }\n${b}`));
+  assert.throws(bad(", email: not-an-email"), /email must be an email address/);
+  assert.throws(bad(", email: 42"), /email must be an email address/);
+  assert.throws(
+    bad(", email: Owner@Acme.in", "  - { id: b, name: B, status: live, email: owner@acme.in }"),
+    /used by two clients/,
+  );
+  const reg = load(
+    yaml(`  - { id: a, name: A, status: live, email: Owner@Acme.IN, platforms: [vercel], cloudflare: { account_id: "${ACCT}" } }
+  - { id: b, name: B, status: unconfirmed }
+  - { id: c, name: C, status: paused, email: c@c.in }
+`),
+  );
+  assert.deepEqual(clientsInfo(reg), [
+    { id: "a", name: "A", email: "owner@acme.in", status: "live", platforms: ["vercel"], accounts: [ACCT] },
+    { id: "b", name: "B", status: "unconfirmed", platforms: [], accounts: [] },
+  ]);
+  assert.deepEqual(JSON.parse(usageConfig(reg, '{ "compatibility_date": "2026-09-01" }').vars.CLIENTS_JSON).map((c) => c.id), ["a", "b"]);
 });
 
 test("render produces the three generated files with the do-not-edit header", () => {

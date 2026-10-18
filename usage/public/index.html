@@ -32,6 +32,9 @@
   header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; }
   header h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   header .when { color: var(--ink-2); }
+  nav.pages { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0 0; }
+  nav.pages a { padding: 4px 12px; border: 1px solid var(--rule); border-radius: 99px; color: var(--ink-2); text-decoration: none; font-size: 13px; }
+  nav.pages a[aria-current] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
   .snark { margin: 18px 0 0; font-size: 20px; line-height: 1.35; max-width: 42ch; }
   .snark b { font-weight: 600; }
 
@@ -128,6 +131,7 @@
     <h1 id="title">free tiers</h1>
     <span class="when" id="when"></span>
   </header>
+  <nav class="pages"><a href="/" aria-current="page">Overview</a><a href="/clients">By client</a><a href="/platforms">By platform</a><a href="/classic">7-day table</a></nav>
   <p class="snark" id="snark"></p>
 
   <section class="runway">
