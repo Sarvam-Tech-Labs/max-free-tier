@@ -68,6 +68,10 @@ test("usage config watches every non-paused Cloudflare account, labelled, hourly
   assert.equal(cfg.vars.LIMIT_LEVELS, "50,80,95");
   assert.deepEqual(cfg.triggers.crons, ["0 * * * *"]);
   assert.equal(cfg.compatibility_date, "2026-09-01");
+  // The usage page has no login: no public URL unless the registry opts in.
+  assert.equal(cfg.workers_dev, false);
+  assert.equal(cfg.preview_urls, false);
+  assert.equal(usageConfig(clients, '{ "compatibility_date": "2026-09-01" }', { usage_page: true }).workers_dev, true);
   assert.throws(() => usageConfig(clients, "{}"), /compatibility_date not found/);
 });
 

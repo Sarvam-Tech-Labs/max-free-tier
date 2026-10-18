@@ -78,10 +78,11 @@ gh workflow run "Free-tier terms watch" --repo <owner>/max-free-tier   # records
 ```
 The uptime job's summary shows the status page URL.
 
-## 7. Protect the usage page
-The usage collector's `/` page shows every client account's usage and has **no login of its own**. Put
-**Cloudflare Access** in front of it (Zero Trust → Access → Applications → self-hosted, the Worker's hostname; free for
-up to 50 users). The FlareWatch status page is private behind its own password.
+## 7. The usage page (off by default)
+The usage collector's `/` page shows every client account's usage and has **no login of its own**, so it gets no public
+URL; alerts reach Telegram regardless. To use it: put **Cloudflare Access** in front of
+`max-free-tier-usage.<subdomain>.workers.dev` (Zero Trust → Access → Applications → self-hosted; free for up to 50
+users), then set `org.usage_page: true` in the registry. The FlareWatch status page is private behind its own password.
 
 ## 8. Also turn on (no code)
 - In each client's Cloudflare account → Notifications: Workers usage notifications. D1 limit emails are automatic.

@@ -128,7 +128,7 @@ export function groups(clients) {
   return out;
 }
 
-export function usageConfig(clients, upstreamWrangler) {
+export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
   const accounts = clients.filter((c) => c.status !== "paused" && c.cloudflare?.account_id);
   const compat = /"compatibility_date"\s*:\s*"([^"]+)"/.exec(upstreamWrangler)?.[1];
   if (!compat) throw new Error("usage/wrangler.jsonc: compatibility_date not found");
@@ -139,6 +139,10 @@ export function usageConfig(clients, upstreamWrangler) {
     main: "src/index.ts",
     compatibility_date: compat,
     observability: { enabled: true, head_sampling_rate: 1 },
+    // The / page shows every client's usage and has no login: no public URL unless the registry opts in
+    // (`org.usage_page: true`, after putting Cloudflare Access in front of it). Alerts go to Telegram either way.
+    workers_dev: org.usage_page === true,
+    preview_urls: false,
     // Hourly, so a limit is reported within the hour instead of within six. ~2 GraphQL calls per account per run.
     // Other platforms run at :30 in their own invocation (own subrequest budget), only when some client has them.
     triggers: { crons: targets.length > 0 ? ["0 * * * *", PROVIDERS_CRON] : ["0 * * * *"] },
@@ -177,7 +181,7 @@ export function render(clients, org = DEFAULT_ORG) {
       ...(org.url ? { links: [{ label: org.name, link: org.url }] } : {}),
       group: { ...groups(clients), ...(org.watchdog ? { Monitoring: ["watchdog"] } : {}) },
     }),
-    "usage/wrangler.generated.jsonc": `${HEADER}${biomeJson(usageConfig(clients, read("usage/wrangler.jsonc")))}\n`,
+    "usage/wrangler.generated.jsonc": `${HEADER}${biomeJson(usageConfig(clients, read("usage/wrangler.jsonc"), org))}\n`,
   };
 }
 
