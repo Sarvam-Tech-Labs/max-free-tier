@@ -55,6 +55,8 @@ function ledger(): Ledger {
           status: "live",
           platforms: ["cloudflare-workers"],
           accounts: [],
+          monitors: [],
+          domains: [],
         },
         {
           id: "beta",
@@ -62,6 +64,8 @@ function ledger(): Ledger {
           status: "unconfirmed",
           platforms: ["vercel", "supabase"],
           accounts: [],
+          monitors: [],
+          domains: [],
         },
         {
           id: "calm",
@@ -70,6 +74,8 @@ function ledger(): Ledger {
           status: "live",
           platforms: [],
           accounts: [],
+          monitors: [],
+          domains: [],
         },
         {
           id: "evil",
@@ -78,6 +84,8 @@ function ledger(): Ledger {
           status: "live",
           platforms: [],
           accounts: [],
+          monitors: [],
+          domains: [],
         },
       ],
       providers: [
@@ -184,7 +192,15 @@ describe("parseClients", () => {
     expect(parseClients("nope")).toEqual([]);
     expect(parseClients('{"a":1}')).toEqual([]);
     expect(parseClients('[{"id":"a","name":"A"},{"id":1},{"name":"x"},null]')).toEqual([
-      { id: "a", name: "A", status: "live", platforms: [], accounts: [] },
+      {
+        id: "a",
+        name: "A",
+        status: "live",
+        platforms: [],
+        accounts: [],
+        monitors: [],
+        domains: [],
+      },
     ]);
   });
 });
@@ -192,9 +208,9 @@ describe("parseClients", () => {
 describe("renderClientsPage", () => {
   it("one row per client with email, sorted by how close each is to a limit; unmetered and unassigned are listed", () => {
     const html = renderClientsPage(ledger());
-    const order = ["Acme Books", "Calm Co", "Beta Foods"].map((n) => html.indexOf(`>${n}</a>`));
+    const order = ["Calm Co", "Acme Books", "Beta Foods"].map((n) => html.indexOf(`>${n}</a>`));
     expect(order.every((i) => i > 0)).toBe(true);
-    expect(order[0]).toBeLessThan(order[1] as number); // acme 96% (workers) before calm 90% (supabase)
+    expect(order[0]).toBeLessThan(order[1] as number); // calm has an alert (paused project): broken first, before acme's 96%
     expect(order[1]).toBeLessThan(order[2] as number); // metered before "not metered yet"
     expect(html).toContain("owner@acme.in");
     expect(html).toContain("96%");

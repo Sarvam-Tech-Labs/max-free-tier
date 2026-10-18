@@ -86,9 +86,13 @@ answers **404 until you set the `DASHBOARD_PASSWORD` secret**, then requires it 
 ```bash
 gh secret set DASHBOARD_PASSWORD --repo $R   # a long random value; redeploy to apply
 ```
-Four views: `/` (what runs out first, with charts), `/clients` (one row per client, found by the `email:` in the
-registry, with every meter), `/platforms` (every free allowance per platform with its source, and each client's share),
-and `/classic` (the original 7-day table with spike detection). No Cloudflare Access / Zero Trust is needed. The FlareWatch
+Five views: `/` (what runs out first, with charts), `/clients` (one row per client, found by the `email:` in the
+registry: sites up or down, domain expiry and every meter), `/activity` (when each check last ran, and one timeline of
+every alert and outage), `/platforms` (every free allowance per platform with its source, and each client's share),
+and `/classic` (the original 7-day table with spike detection). No Cloudflare Access / Zero Trust is needed. Uptime comes from FlareWatch through a service binding (no second login).
+To also see the daily free-tier terms watch and limits check on `/activity`, set the same random `INGEST_TOKEN` secret in
+both repos and the repository variable `INGEST_URL` (`https://max-free-tier-usage.<subdomain>.workers.dev/ingest`) in the
+repo that runs the terms watch. The FlareWatch
 status page is private behind its own password.
 
 ## 8. Also turn on (no code)

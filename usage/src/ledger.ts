@@ -39,6 +39,9 @@ export interface ClientInfo {
   platforms: string[];
   /** Cloudflare account ids of this client. */
   accounts: string[];
+  /** FlareWatch monitors (ids as FlareWatch knows them) and registered domains; live clients only. */
+  monitors: Array<{ id: string; name: string; url: string }>;
+  domains: string[];
 }
 
 export interface LedgerProvider {
@@ -159,6 +162,8 @@ export function parseClients(json: string | undefined): ClientInfo[] {
         ...c,
         platforms: Array.isArray(c.platforms) ? c.platforms : [],
         accounts: Array.isArray(c.accounts) ? c.accounts : [],
+        monitors: Array.isArray(c.monitors) ? c.monitors : [],
+        domains: Array.isArray(c.domains) ? c.domains : [],
         status: typeof c.status === "string" ? c.status : "live",
       }));
   } catch {

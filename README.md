@@ -52,9 +52,11 @@ Every day a second job also compares our hardcoded Cloudflare free-plan numbers 
 posts to Telegram on any difference — or when a docs table changed shape and can no longer be read — so alerts never
 silently use a stale limit. (Other platforms publish HTML only and stay on the diff-only watch.)
 
-One password-protected website with four views: **overview** (what runs out first, bars, daily history and projections —
+One password-protected website for everything — uptime, domain expiry, free-tier usage, free-tier changes and an
+activity timeline. Views: **overview** (what runs out first, bars, daily history and projections —
 adapted from free-tier-maxxer's dashboard), **by client** (each client found by email, with every meter),
-**by platform** (every free allowance with its source, and each client's share of it) and the original 7-day table.
+**by platform** (every free allowance with its source, and each client's share of it) , **activity** (when every check last ran, every alert and outage) and the original 7-day table. Telegram only pushes
+the alerts; the site is where you look.
 
 Not covered, because Vercel Hobby and Supabase Free show them only in their logged-in dashboards (no API token can
 read them): Vercel bandwidth / requests / invocations, Supabase egress / realtime / edge invocations. Their own

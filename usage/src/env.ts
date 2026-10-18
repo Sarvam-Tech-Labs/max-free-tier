@@ -18,6 +18,10 @@ export interface Env {
   PROVIDER_TOKENS?: string;
   /** Secret. Without it the overview page does not exist (404); with it, HTTP Basic with this password. */
   DASHBOARD_PASSWORD?: string;
+  /** Service binding to FlareWatch's monitor Worker; the site reads GET /view from it (uptime per client). */
+  MONITOR_WORKER?: Fetcher;
+  /** Secret. Bearer token the daily GitHub Actions jobs use to POST their results to /ingest. Unset = /ingest is 404. */
+  INGEST_TOKEN?: string;
   /** Static assets binding serving public/index.html (the overview page). */
   ASSETS?: Fetcher;
   /** JSON array of the registry's clients (id, name, email, status, platforms, Cloudflare accounts) for the by-client page. */

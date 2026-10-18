@@ -11,9 +11,18 @@
  */
 import { authorized } from "./auth";
 import type { Env } from "./env";
+import { loadDomains, readUptime } from "./health";
+import { handleIngest } from "./ingest";
 import { buildLedger, dataJs, seriesJs } from "./ledger";
 import { PROVIDERS_CRON, renderIndex, runCollect, runProviders } from "./run";
-import { renderClientsPage, renderPlatformsPage } from "./views";
+import { loadRuns, recentAlerts } from "./store";
+import { type Health, renderActivityPage, renderClientsPage, renderPlatformsPage } from "./views";
+
+/** Uptime (live from FlareWatch) and stored domain expiry for the client and activity pages. */
+async function health(env: Env): Promise<Health> {
+  const [uptime, domains] = await Promise.all([readUptime(env), loadDomains(env.USAGE)]);
+  return { uptime, domains, now: new Date() };
+}
 
 const NO_STORE = { "Cache-Control": "no-store" };
 const NOT_FOUND = () => new Response("Not found", { status: 404 });
@@ -33,6 +42,9 @@ export default {
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    // The daily GitHub Actions jobs report here with their own token (not the site password).
+    if (url.pathname === "/ingest" && request.method === "POST") return handleIngest(request, env);
     if (request.method !== "GET" || !env.DASHBOARD_PASSWORD) return NOT_FOUND();
     if (!(await authorized(request, env.DASHBOARD_PASSWORD))) {
       return new Response("Sign in", {
@@ -43,7 +55,6 @@ export default {
         },
       });
     }
-    const url = new URL(request.url);
     switch (url.pathname) {
       case "/":
       case "/index.html": {
@@ -59,9 +70,24 @@ export default {
       case "/series.js":
         return new Response(seriesJs(await buildLedger(env)), { headers: JS });
       case "/clients":
-        return html(renderClientsPage(await buildLedger(env), url.searchParams.get("q") ?? ""));
+        return html(
+          renderClientsPage(
+            await buildLedger(env),
+            url.searchParams.get("q") ?? "",
+            await health(env),
+          ),
+        );
       case "/platforms":
         return html(renderPlatformsPage(await buildLedger(env)));
+      case "/activity": {
+        const [ledger, h, runs, alerts] = await Promise.all([
+          buildLedger(env),
+          health(env),
+          loadRuns(env.USAGE),
+          recentAlerts(env.USAGE, 100),
+        ]);
+        return html(renderActivityPage(ledger, h, runs, alerts));
+      }
       case "/classic":
         return html(await renderIndex(env));
       default:

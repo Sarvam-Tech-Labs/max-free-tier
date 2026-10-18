@@ -59,18 +59,26 @@ export function load(text) {
 const KINDS = ["github", "resend", "supabase", "vercel"];
 const PROVIDERS_CRON = "30 * * * *"; // = PROVIDERS_CRON in usage/src/run.ts
 
-/** Every non-paused client with its email and Cloudflare account, for the overview page's by-client view (CLIENTS_JSON). */
+/**
+ * Every non-paused client for the site's by-client view (CLIENTS_JSON): email, Cloudflare account, and — for live
+ * clients — the FlareWatch monitor ids (same ids as monitors()) and domains, so the site can show uptime and expiry.
+ */
 export function clientsInfo(clients) {
   return clients
     .filter((c) => c.status !== "paused")
-    .map((c) => ({
-      id: c.id,
-      name: c.name,
-      ...(c.email ? { email: c.email.toLowerCase() } : {}),
-      status: c.status,
-      platforms: c.platforms ?? [],
-      accounts: c.cloudflare?.account_id ? [c.cloudflare.account_id] : [],
-    }));
+    .map((c) => {
+      const isLive = c.status === "live";
+      return {
+        id: c.id,
+        name: c.name,
+        ...(c.email ? { email: c.email.toLowerCase() } : {}),
+        status: c.status,
+        platforms: c.platforms ?? [],
+        accounts: c.cloudflare?.account_id ? [c.cloudflare.account_id] : [],
+        monitors: isLive ? (c.monitors ?? []).map((m) => ({ id: `${c.id}_${m.id}`, name: m.name, url: m.url })) : [],
+        domains: isLive ? (c.domains ?? []) : [],
+      };
+    });
 }
 
 /** Other-platform targets of live clients, for PROVIDERS_JSON. Token *names* only; the tokens are a secret. */
@@ -163,6 +171,9 @@ export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
     workers_dev: true,
     preview_urls: false,
     assets: { directory: "public", binding: "ASSETS", run_worker_first: true, html_handling: "none" },
+    // Read FlareWatch's state (GET /view) so the site shows uptime too. Only when some client has monitors, i.e. the
+    // uptime Worker is deployed. The binding could also write; the usage Worker only ever reads /view.
+    ...(monitors(clients).length > 0 ? { services: [{ binding: "MONITOR_WORKER", service: "flarewatch-worker" }] } : {}),
     // Hourly, so a limit is reported within the hour instead of within six. ~2 GraphQL calls per account per run.
     // Other platforms run at :30 in their own invocation (own subrequest budget), only when some client has them.
     triggers: { crons: targets.length > 0 ? ["0 * * * *", PROVIDERS_CRON] : ["0 * * * *"] },

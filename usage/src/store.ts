@@ -209,3 +209,64 @@ export async function loadReadings(db: D1Database): Promise<ReadingRow[]> {
     .all<Omit<ReadingRow, "limit"> & { limitValue: number }>();
   return res.results.map(({ limitValue, ...r }) => ({ ...r, limit: limitValue }));
 }
+
+/** Alerts kept for this long; older rows are dropped on write so the table never grows without bound. */
+export const ALERT_LOG_DAYS = 90;
+
+export interface AlertRow {
+  at: string;
+  source: string;
+  text: string;
+}
+
+export async function logAlert(
+  db: D1Database,
+  source: string,
+  text: string,
+  at: string,
+): Promise<void> {
+  const cutoff = new Date(Date.parse(at) - ALERT_LOG_DAYS * 86_400_000).toISOString();
+  await db.batch([
+    db
+      .prepare("INSERT INTO alert_log (at, source, text) VALUES (?1, ?2, ?3)")
+      .bind(at, source, text),
+    db.prepare("DELETE FROM alert_log WHERE at < ?1").bind(cutoff),
+  ]);
+}
+
+export async function recentAlerts(db: D1Database, limit = 50): Promise<AlertRow[]> {
+  const res = await db
+    .prepare("SELECT at, source, text FROM alert_log ORDER BY at DESC, id DESC LIMIT ?1")
+    .bind(limit)
+    .all<AlertRow>();
+  return res.results;
+}
+
+export interface CheckRun {
+  name: string;
+  at: string;
+  ok: boolean;
+  summary: string;
+}
+
+export async function recordRun(
+  db: D1Database,
+  name: string,
+  ok: boolean,
+  summary: string,
+  at: string,
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO check_runs (name, at, ok, summary) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (name) DO UPDATE SET at = excluded.at, ok = excluded.ok, summary = excluded.summary",
+    )
+    .bind(name, at, ok ? 1 : 0, summary)
+    .run();
+}
+
+export async function loadRuns(db: D1Database): Promise<CheckRun[]> {
+  const res = await db
+    .prepare("SELECT name, at, ok, summary FROM check_runs ORDER BY name")
+    .all<{ name: string; at: string; ok: number; summary: string }>();
+  return res.results.map((r) => ({ ...r, ok: r.ok === 1 }));
+}

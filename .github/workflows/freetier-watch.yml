@@ -57,7 +57,20 @@ jobs:
               monospace: true
           YAML
       - name: Check for changes
-        run: urlwatch --urls watch/urls.yaml --config "$RUNNER_TEMP/urlwatch.yaml" --cache .urlwatch-cache.db
+        run: urlwatch --urls watch/urls.yaml --config "$RUNNER_TEMP/urlwatch.yaml" --cache .urlwatch-cache.db | tee "$RUNNER_TEMP/report.txt"
+      # Also show the result on the site's Activity page (optional: repository variable INGEST_URL + secret INGEST_TOKEN).
+      # urlwatch prints nothing when no page changed, so an empty report means "no changes".
+      - name: Report to the site
+        if: always() && vars.INGEST_URL != ''
+        env:
+          INGEST_URL: ${{ vars.INGEST_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: |
+          [ -n "$INGEST_TOKEN" ] || { echo "::notice::INGEST_TOKEN not set; skipping"; exit 0; }
+          touch "$RUNNER_TEMP/report.txt"
+          OK=$([ -s "$RUNNER_TEMP/report.txt" ] && echo false || echo true)
+          jq -n --rawfile t "$RUNNER_TEMP/report.txt" --argjson ok "$OK" '{check: "terms", ok: $ok, text: $t}' |
+            curl -sS -f -X POST "$INGEST_URL" -H "Authorization: Bearer $INGEST_TOKEN" -H "Content-Type: application/json" --data-binary @- -o /dev/null -w "ingest: HTTP %{http_code}\n"
       - name: Save snapshots
         if: always()
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -79,4 +92,17 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: node scripts/limits-drift.mjs
+          INGEST_URL: ${{ vars.INGEST_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: |
+          set +e
+          node scripts/limits-drift.mjs > "$RUNNER_TEMP/drift.txt" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/drift.txt"
+          # Also show the result on the site's Activity page (optional, see the terms job).
+          if [ -n "$INGEST_URL" ] && [ -n "$INGEST_TOKEN" ]; then
+            OK=$([ "$code" = 0 ] && echo true || echo false)
+            jq -n --rawfile t "$RUNNER_TEMP/drift.txt" --argjson ok "$OK" '{check: "drift", ok: $ok, text: (if $ok then "" else $t end)}' |
+              curl -sS -X POST "$INGEST_URL" -H "Authorization: Bearer $INGEST_TOKEN" -H "Content-Type: application/json" --data-binary @- -o /dev/null -w "ingest: HTTP %{http_code}\n"
+          fi
+          exit $code

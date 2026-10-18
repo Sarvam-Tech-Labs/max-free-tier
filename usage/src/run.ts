@@ -8,6 +8,7 @@
  */
 import type { Env } from "./env";
 import { fetchUsage, toRows } from "./graphql";
+import { domainsOf, refreshDomains } from "./health";
 import { type LimitStatus, limitStatus, parseLevels, parseLimits } from "./limits";
 import { formatReport, notify, type ReportSection } from "./notify";
 import { renderPage, type Section } from "./page";
@@ -24,9 +25,11 @@ import {
   filterUnnotified,
   filterUnnotifiedLimits,
   loadTotals,
+  logAlert,
   markLimitNotified,
   markNotified,
   pivot,
+  recordRun,
   saveReadings,
   sumByMetric,
   upsertRows,
@@ -110,8 +113,14 @@ export async function runCollect(
   const summary: RunSummary = { date: today, written: 0, spikes: 0, notified: 0 };
   const accounts = parseAccounts(env.CF_ACCOUNT_ID);
   if (!env.CF_API_TOKEN || accounts.length === 0) {
-    summary.error = "CF_API_TOKEN / CF_ACCOUNT_ID not set";
-    return summary;
+    // Recorded, so the site shows the misconfiguration instead of "not run yet".
+    return finish(
+      env,
+      "collect",
+      summary,
+      ["CF_API_TOKEN / CF_ACCOUNT_ID not set"],
+      now.toISOString(),
+    );
   }
   const errors: string[] = [];
   let labels: Record<string, string> = {};
@@ -161,9 +170,12 @@ export async function runCollect(
 
   if (sections.length > 0) {
     try {
-      const results = await notify(env, formatReport(today, sections), fetchImpl);
+      const text = formatReport(today, sections);
+      const results = await notify(env, text, fetchImpl);
       summary.notified = results.filter((r) => r.ok).length;
-      if (results.length > 0 && results.every((r) => r.ok)) {
+      const delivered = results.length > 0 && results.every((r) => r.ok);
+      await logAlert(env.USAGE, "usage", logText(text, results.length, delivered), collectedAt);
+      if (delivered) {
         for (const s of sections) {
           await markNotified(env.USAGE, today, s.spikes, collectedAt, s.key);
           await markLimitNotified(env.USAGE, s.key, s.limits, collectedAt);
@@ -174,7 +186,42 @@ export async function runCollect(
     }
   }
 
+  // Domain expiry for the site (once a day per domain). A lookup failure is reported, never fatal.
+  try {
+    for (const e of await refreshDomains(env.USAGE, domainsOf(env.CLIENTS_JSON), now, fetchImpl))
+      errors.push(e);
+  } catch (e) {
+    errors.push(`domain lookups: ${message(e)}`);
+  }
+
+  return finish(env, "collect", summary, errors, collectedAt);
+}
+
+/** What the activity log keeps for one alert message: the text, plus why it may not have reached anyone. */
+function logText(text: string, channels: number, delivered: boolean): string {
+  if (channels === 0) return `${text}\n(no alert channel configured)`;
+  return delivered ? text : `${text}\n(delivery failed; retried next run)`;
+}
+
+/** Record the run for the site ("checked N minutes ago") and set the summary's error. Never throws. */
+async function finish(
+  env: Env,
+  name: string,
+  summary: RunSummary,
+  errors: string[],
+  at: string,
+): Promise<RunSummary> {
+  const line = (s: RunSummary) =>
+    s.error ??
+    (name === "collect"
+      ? `${s.written} rows, ${s.spikes} spike(s), ${s.limitAlerts ?? 0} limit level(s) crossed`
+      : `${s.limitAlerts ?? 0} limit level(s) crossed`);
   if (errors.length > 0) summary.error = errors.join("; ");
+  try {
+    await recordRun(env.USAGE, name, !summary.error, line(summary), at);
+  } catch (e) {
+    summary.error = [summary.error, `recording the run: ${message(e)}`].filter(Boolean).join("; ");
+  }
   return summary;
 }
 
@@ -203,8 +250,7 @@ export async function runProviders(
     tokens = parseTokens(env.PROVIDER_TOKENS);
     levels = parseLevels(env.LIMIT_LEVELS?.trim() || "50,80,95");
   } catch (e) {
-    summary.error = message(e);
-    return summary;
+    return finish(env, "providers", summary, [message(e)], now.toISOString());
   }
 
   const collectedAt = now.toISOString();
@@ -226,9 +272,12 @@ export async function runProviders(
 
   if (sections.length > 0) {
     try {
-      const results = await notify(env, formatReport(today, sections), fetchImpl);
+      const text = formatReport(today, sections);
+      const results = await notify(env, text, fetchImpl);
       summary.notified = results.filter((r) => r.ok).length;
-      if (results.length > 0 && results.every((r) => r.ok)) {
+      const delivered = results.length > 0 && results.every((r) => r.ok);
+      await logAlert(env.USAGE, "providers", logText(text, results.length, delivered), collectedAt);
+      if (delivered) {
         for (const s of sections) await markLimitNotified(env.USAGE, s.key, s.limits, collectedAt);
       }
     } catch (e) {
@@ -236,8 +285,7 @@ export async function runProviders(
     }
   }
 
-  if (errors.length > 0) summary.error = errors.join("; ");
-  return summary;
+  return finish(env, "providers", summary, errors, collectedAt);
 }
 
 export async function renderIndex(env: Env, now: Date = new Date()): Promise<string> {

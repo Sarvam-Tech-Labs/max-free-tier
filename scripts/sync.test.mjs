@@ -114,16 +114,31 @@ test("email identifies a client: optional, must look like an email, may be share
   const shared = load(yaml("  - { id: a, name: A, status: live, email: Owner@Acme.in }\n  - { id: b, name: B, status: live, email: owner@acme.in }"));
   assert.deepEqual(clientsInfo(shared).map((c) => c.email), ["owner@acme.in", "owner@acme.in"]);
   const reg = load(
-    yaml(`  - { id: a, name: A, status: live, email: Owner@Acme.IN, platforms: [vercel], cloudflare: { account_id: "${ACCT}" } }
-  - { id: b, name: B, status: unconfirmed }
+    yaml(`  - { id: a, name: A, status: live, email: Owner@Acme.IN, platforms: [vercel], cloudflare: { account_id: "${ACCT}" }, domains: [a.in], monitors: [{ id: site, name: Site, url: "https://a.in" }] }
+  - { id: b, name: B, status: unconfirmed, domains: [b.in], monitors: [{ id: site, name: Site, url: "https://b.in" }] }
   - { id: c, name: C, status: paused, email: c@c.in }
 `),
   );
   assert.deepEqual(clientsInfo(reg), [
-    { id: "a", name: "A", email: "owner@acme.in", status: "live", platforms: ["vercel"], accounts: [ACCT] },
-    { id: "b", name: "B", status: "unconfirmed", platforms: [], accounts: [] },
+    {
+      id: "a",
+      name: "A",
+      email: "owner@acme.in",
+      status: "live",
+      platforms: ["vercel"],
+      accounts: [ACCT],
+      monitors: [{ id: "a_site", name: "Site", url: "https://a.in" }], // same id FlareWatch uses
+      domains: ["a.in"],
+    },
+    // Not live → not monitored, so no monitors or domains to show.
+    { id: "b", name: "B", status: "unconfirmed", platforms: [], accounts: [], monitors: [], domains: [] },
   ]);
-  assert.deepEqual(JSON.parse(usageConfig(reg, '{ "compatibility_date": "2026-09-01" }').vars.CLIENTS_JSON).map((c) => c.id), ["a", "b"]);
+  const cfg = usageConfig(reg, '{ "compatibility_date": "2026-09-01" }');
+  assert.deepEqual(JSON.parse(cfg.vars.CLIENTS_JSON).map((c) => c.id), ["a", "b"]);
+  // Some live client has monitors → the site reads FlareWatch through a service binding; none → no binding.
+  assert.deepEqual(cfg.services, [{ binding: "MONITOR_WORKER", service: "flarewatch-worker" }]);
+  const noMonitors = load(yaml("  - { id: z, name: Z, status: live }"));
+  assert.equal(usageConfig(noMonitors, '{ "compatibility_date": "2026-09-01" }').services, undefined);
 });
 
 test("render produces the three generated files with the do-not-edit header", () => {
