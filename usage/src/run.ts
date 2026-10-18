@@ -288,9 +288,10 @@ export async function runProviders(
       const fresh = await filterUnnotifiedLimits(env.USAGE, key, statuses);
       if (fresh.length > 0) sections.push({ key, label, spikes: [], limits: fresh });
     } catch (e) {
-      errors.push(`${label}: ${message(e)}`);
-      // A token that was never added is "not connected", not a failing token: it must not raise alerts.
+      // A token that was never added is "not connected", not a failing token: no alert, and not an error of the run
+      // either (the Tokens page already says "Missing", and a run that shows "had errors" for it would cry wolf).
       if (!message(e).includes(MISSING_TOKEN)) {
+        errors.push(`${label}: ${message(e)}`);
         await saveTargetStatus(env.USAGE, key, t.token, false, message(e), collectedAt).catch(
           () => {},
         );

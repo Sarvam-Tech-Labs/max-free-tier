@@ -478,9 +478,8 @@ describe("hourly run uses and tracks the tokens", () => {
     const p = platforms();
     const s = await runProviders(e, new Date("2026-10-18T12:30:00Z"), p.f);
     expect(bearerOf(p.calls.find((c) => c.url.includes("github")))).toBe(`Bearer ${SECRET}`);
-    expect(s.error).toBe(
-      "Beta · Vercel: token VERCEL_BETA is not set (add it on the site's Tokens page)",
-    );
+    // A missing token is "not connected yet", not an error of the run (so the site does not show "had errors" for it).
+    expect(s.error).toBeUndefined();
     const statuses = await loadTargetStatus(e.USAGE);
     expect(statuses.map((x) => [x.target, x.ok])).toEqual([["github:acme", true]]); // no row for the missing token
     expect((await listTokens(e.USAGE))[0]?.expiresAt).toBe("2026-11-17T11:07:28.000Z"); // GitHub's date kept fresh
