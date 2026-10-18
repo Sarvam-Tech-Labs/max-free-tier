@@ -30,7 +30,7 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 
 ## "The free tier changed" (Telegram diff from the daily terms watch)
 1. For Cloudflare the diff is the docs' Markdown source — find the commit in `cloudflare/cloudflare-docs` for context.
-2. If a number we rely on changed: update `usage/src/limits.ts` (`FREE_PLAN_LIMITS`, `LIMITS_AS_OF`) or
+2. `scripts/limits-drift.mjs` (daily, job `limits`) compares `FREE_PLAN_LIMITS` with Cloudflare's docs source and posts DRIFT / UNVERIFIABLE to Telegram. If a number we rely on changed: update `usage/src/limits.ts` (`FREE_PLAN_LIMITS`, `LIMITS_AS_OF`) or
    `usage/src/providers.ts` (`PROVIDER_LIMITS`: GitHub minutes, Supabase sizes) and the tests.
 3. A new `<Render file="x" product="y"/>` line on a Cloudflare page = a new partial
    (`src/content/partials/y/x.mdx`): add it to `watch/urls.yaml`.

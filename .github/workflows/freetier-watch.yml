@@ -64,3 +64,19 @@ jobs:
         with:
           path: .urlwatch-cache.db
           key: urlwatch-${{ github.run_id }}
+
+  # The diff above says THAT a page changed; this says whether the numbers in usage/src/limits.ts are still right,
+  # by reading Cloudflare's docs source. Fails the run (and posts to Telegram) on drift or a page that changed shape.
+  limits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Compare limits.ts with Cloudflare's docs
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/limits-drift.mjs

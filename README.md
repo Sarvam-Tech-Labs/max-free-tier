@@ -48,6 +48,10 @@ Full walkthrough: [`docs/SETUP.md`](docs/SETUP.md).
 R2, Workers AI, Pages — plus Vercel limits, Supabase, Resend, Firebase pricing and GitHub Actions billing. PRs adding
 more providers are very welcome.
 
+Every day a second job also compares our hardcoded Cloudflare free-plan numbers with the docs' Markdown source and
+posts to Telegram on any difference — or when a docs table changed shape and can no longer be read — so alerts never
+silently use a stale limit. (Other platforms publish HTML only and stay on the diff-only watch.)
+
 Not covered, because Vercel Hobby and Supabase Free show them only in their logged-in dashboards (no API token can
 read them): Vercel bandwidth / requests / invocations, Supabase egress / realtime / edge invocations. Their own
 warning emails remain the signal there.
