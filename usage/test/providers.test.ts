@@ -116,6 +116,8 @@ describe("checkTarget", () => {
     const empty = stub({ "https://api.github.com/": () => Response.json({ usageItems: [] }) });
     expect(await checkTarget(gh, TOKENS, NOW, LEVELS, empty.f)).toMatchObject([
       { metric: "github.actions_minutes", used: 0, limit: 2000, level: null },
+      { metric: "github.packages_transfer_bytes", used: 0, limit: 1e9, level: null },
+      { metric: "github.codespaces_core_hours", used: 0, limit: 120, level: null },
     ]);
     const denied = stub({ "https://api.github.com/": () => new Response("no", { status: 403 }) });
     const err = await checkTarget(gh, TOKENS, NOW, LEVELS, denied.f).catch((e: Error) => e.message);
@@ -294,8 +296,9 @@ describe("runProviders", () => {
     const e = env({ PROVIDERS_JSON: JSON.stringify([gh]) });
     await runProviders(e, NOW, stub(minutes(300)).f); // 15% of 2,000: below every alert level
     const first = await loadReadings(e.USAGE);
-    expect(first).toMatchObject([
-      {
+    expect(first).toHaveLength(3);
+    expect(first).toContainEqual(
+      expect.objectContaining({
         target: "github:acme",
         metric: "github.actions_minutes",
         used: 300,
@@ -303,8 +306,8 @@ describe("runProviders", () => {
         period: "month",
         note: null,
         checkedAt: NOW.toISOString(),
-      },
-    ]);
+      }),
+    );
 
     const later = new Date("2026-10-18T11:30:00Z");
     const down = stub({ "https://api.github.com/": () => new Response("", { status: 503 }) });
@@ -312,9 +315,76 @@ describe("runProviders", () => {
     expect(await loadReadings(e.USAGE)).toEqual(first); // still the 10:30 reading, so the page can show its age
 
     await runProviders(e, later, stub(minutes(450)).f);
-    expect(await loadReadings(e.USAGE)).toMatchObject([
-      { used: 450, checkedAt: later.toISOString() },
+    const updated = await loadReadings(e.USAGE);
+    expect(updated.find((r) => r.metric === "github.actions_minutes")).toMatchObject({
+      used: 450,
+      checkedAt: later.toISOString(),
+    });
+  });
+
+  it("github: Packages transfer (GB) and Codespaces core-hours are read from the same report; storage is not mistaken for either", async () => {
+    const { f } = stub({
+      "https://api.github.com/": () =>
+        Response.json({
+          usageItems: [
+            { product: "actions", sku: "actions_linux", unitType: "minutes", grossQuantity: 10 },
+            {
+              product: "Packages",
+              sku: "packages_bandwidth",
+              unitType: "gigabytes",
+              grossQuantity: 0.25,
+            },
+            {
+              product: "Packages",
+              sku: "packages_storage",
+              unitType: "gigabyte-hours",
+              grossQuantity: 40,
+            },
+            {
+              product: "Codespaces",
+              sku: "codespaces_linux_2_core",
+              unitType: "hours",
+              grossQuantity: 10,
+            },
+            {
+              product: "Codespaces",
+              sku: "codespaces_linux_4_core",
+              unitType: "core-hours",
+              grossQuantity: 3,
+            },
+            {
+              product: "Codespaces",
+              sku: "codespaces_storage",
+              unitType: "gigabyte-months",
+              grossQuantity: 9,
+            },
+          ],
+        }),
+    });
+    expect(await checkTarget(gh, TOKENS, NOW, LEVELS, f)).toMatchObject([
+      { metric: "github.actions_minutes", used: 10 },
+      { metric: "github.packages_transfer_bytes", used: 250_000_000, limit: 1e9, pct: 25 },
+      { metric: "github.codespaces_core_hours", used: 23, limit: 120, period: "month" }, // 10 h × 2 cores + 3
     ]);
+  });
+
+  it("github: an item we cannot read leaves that meter out rather than showing a false zero", async () => {
+    const { f } = stub({
+      "https://api.github.com/": () =>
+        Response.json({
+          usageItems: [
+            { product: "Packages", sku: "packages_mystery", unitType: "widgets", grossQuantity: 5 },
+            {
+              product: "Codespaces",
+              sku: "codespaces_mystery",
+              unitType: "hours",
+              grossQuantity: 5,
+            },
+          ],
+        }),
+    });
+    const metrics = (await checkTarget(gh, TOKENS, NOW, LEVELS, f)).map((s) => s.metric);
+    expect(metrics).toEqual(["github.actions_minutes"]);
   });
 
   it("scheduled() runs providers on PROVIDERS_CRON and the collect otherwise", async () => {

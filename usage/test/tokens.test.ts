@@ -134,7 +134,7 @@ describe("POST /api/tokens", () => {
     const body = await json(res);
     expect(res.status).toBe(200);
     expect(body.ok).toBe(true);
-    expect(String(body.detail)).toContain("GitHub accepted the token: read 1 meter");
+    expect(String(body.detail)).toContain("GitHub accepted the token: read 3 meters");
     expect(body.expiresAt).toBe("2026-11-17T11:07:28.000Z"); // read from GitHub's header
     expect(JSON.stringify(body)).not.toContain(SECRET);
 
@@ -151,7 +151,16 @@ describe("POST /api/tokens", () => {
     expect((await loadManagedTokens(e)).tokens).toEqual({ GH_ACME: SECRET });
 
     // Readings and a connected status exist right away: the site shows the platform without waiting an hour.
-    expect(await loadReadings(e.USAGE)).toMatchObject([{ target: "github:acme", used: 100 }]);
+    const readings = await loadReadings(e.USAGE);
+    expect(readings.map((r) => r.metric).sort()).toEqual([
+      "github.actions_minutes",
+      "github.codespaces_core_hours",
+      "github.packages_transfer_bytes",
+    ]);
+    expect(readings.find((r) => r.metric === "github.actions_minutes")).toMatchObject({
+      target: "github:acme",
+      used: 100,
+    });
     expect(await loadTargetStatus(e.USAGE)).toMatchObject([
       { target: "github:acme", token: "GH_ACME", ok: true },
     ]);

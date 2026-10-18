@@ -20,7 +20,7 @@ export interface Meter {
   label: string;
   used: number;
   limit: number;
-  unit: "count" | "bytes" | "minutes";
+  unit: "count" | "bytes" | "minutes" | "hours";
   /** False for sizes (database, storage), which never reset. */
   resets: boolean;
   /** When it next resets (ISO), when known: the platform's own time, else the calendar rule. */
@@ -99,6 +99,8 @@ export function labelFor(metric: string): string {
   const sb = /^supabase\.([^.]+)\.(db_bytes|storage_bytes)$/.exec(metric);
   if (sb) return `${sb[2] === "db_bytes" ? "Database size" : "File storage"} · ${sb[1]}`;
   if (metric === "github.actions_minutes") return "Actions minutes (private repos)";
+  if (metric === "github.packages_transfer_bytes") return "Packages data transfer";
+  if (metric === "github.codespaces_core_hours") return "Codespaces compute";
   const known = CF_LABELS[metric] ?? RESEND_LABELS[metric];
   if (known) return known;
   return capitalise((metric.split(".").pop() ?? metric).replace(/_/g, " "));
@@ -216,6 +218,7 @@ async function cloudflareProviders(
 
 function unitFor(metric: string): Meter["unit"] {
   if (metric.endsWith("_bytes")) return "bytes";
+  if (metric === "github.codespaces_core_hours") return "hours";
   return metric === "github.actions_minutes" ? "minutes" : "count";
 }
 

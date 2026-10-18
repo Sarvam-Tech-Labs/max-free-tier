@@ -70,6 +70,7 @@ function fmtValue(unit: Meter["unit"], n: number): string {
           : `${Math.round(n)} B`;
   }
   if (unit === "minutes") return `${Math.round(n).toLocaleString("en-US")} min`;
+  if (unit === "hours") return `${(Math.round(n * 10) / 10).toLocaleString("en-US")} core-h`;
   return Math.round(n).toLocaleString("en-US");
 }
 

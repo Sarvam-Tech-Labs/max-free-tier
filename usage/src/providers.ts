@@ -39,6 +39,8 @@ export const KINDS: readonly ProviderKind[] = ["github", "resend", "supabase", "
  */
 export const PROVIDER_LIMITS = {
   githubActionsMinutes: 2_000,
+  githubPackagesTransferBytes: 1e9,
+  githubCodespacesCoreHours: 120,
   supabaseDbBytes: 500e6,
   supabaseStorageBytes: 1e9,
 } as const;
@@ -101,13 +103,54 @@ function problem(metric: string, note: string, today: string): LimitStatus {
   return { metric, used: 1, limit: 1, period: "day", periodKey: today, pct: 100, level: 100, note };
 }
 
+interface GitHubItem {
+  product?: string;
+  sku?: string;
+  unitType?: string;
+  grossQuantity?: number;
+}
 interface GitHubSummary {
-  usageItems?: Array<{ product?: string; unitType?: string; grossQuantity?: number }>;
+  usageItems?: GitHubItem[];
+}
+
+const sum = (items: readonly GitHubItem[], pick: (i: GitHubItem) => number) =>
+  items.reduce((a, i) => a + pick(i), 0);
+const qty = (i: GitHubItem) => i.grossQuantity ?? 0;
+const isStorage = (i: GitHubItem) =>
+  /storage/i.test(i.sku ?? "") || /(gigabyte|gb).?(hour|month)/i.test(i.unitType ?? "");
+
+/**
+ * Packages data transfer (GB) this month, in bytes. GitHub leaves a product out of the report until it is used, so none
+ * = 0. Storage items share the product and are not transfer. null when an item here is not something we can read: better
+ * no number than a false zero.
+ */
+function packagesTransferBytes(items: readonly GitHubItem[]): number | null {
+  const mine = items.filter((i) => /packages/i.test(i.product ?? "") && !isStorage(i));
+  const gigabytes = mine.filter((i) => /^(gb|gigabytes?)$/i.test(i.unitType ?? ""));
+  return gigabytes.length === mine.length ? sum(gigabytes, qty) * 1e9 : null;
+}
+
+/**
+ * Codespaces compute in core-hours. A unit saying "core-hours" is taken as is; plain "hours" is scaled by the core count
+ * in the SKU name ("…_4_core"). null if an item cannot be read either way.
+ */
+function codespacesCoreHours(items: readonly GitHubItem[]): number | null {
+  const mine = items.filter((i) => /codespaces/i.test(i.product ?? "") && !isStorage(i));
+  let total = 0;
+  for (const i of mine) {
+    const unit = i.unitType ?? "";
+    const cores = /(\d+)[-_ ]?core/i.exec(i.sku ?? "")?.[1];
+    if (/core.?hour/i.test(unit)) total += qty(i);
+    else if (/hour/i.test(unit) && cores) total += qty(i) * Number(cores);
+    else return null;
+  }
+  return total;
 }
 
 /**
  * Actions minutes this UTC calendar month. Token: fine-grained PAT owned by the account, user permission
- * "Plan: read" (organizations: "Administration: read"). SKUs that were not used are absent, so absent = 0.
+ * "Plan: read" (organizations: "Administration: read"). SKUs that were not used are absent, so absent = 0. The same
+ * response carries Packages transfer and Codespaces; Actions storage and the per-repository cache are not measured here.
  * shortcut: Windows / macOS minutes are counted 1:1 like Linux, while GitHub may burn the allowance faster for them;
  * add per-SKU weights if a client runs non-Linux jobs.
  */
@@ -136,10 +179,12 @@ async function github(
   const expMs = exp ? Date.parse(exp.replace(" UTC", "Z").replace(" ", "T")) : Number.NaN;
   if (info && !Number.isNaN(expMs)) info.expiresAt = new Date(expMs).toISOString();
   const body = (await res.json()) as GitHubSummary;
-  const minutes = (body.usageItems ?? [])
-    .filter((i) => /actions/i.test(i.product ?? "") && /minute/i.test(i.unitType ?? ""))
-    .reduce((a, i) => a + (i.grossQuantity ?? 0), 0);
-  return [
+  const items = body.usageItems ?? [];
+  const minutes = sum(
+    items.filter((i) => /actions/i.test(i.product ?? "") && /minute/i.test(i.unitType ?? "")),
+    qty,
+  );
+  const readings = [
     toStatus(
       "github.actions_minutes",
       minutes,
@@ -149,6 +194,31 @@ async function github(
       levels,
     ),
   ];
+  const transfer = packagesTransferBytes(items);
+  if (transfer !== null)
+    readings.push(
+      toStatus(
+        "github.packages_transfer_bytes",
+        transfer,
+        PROVIDER_LIMITS.githubPackagesTransferBytes,
+        "month",
+        today,
+        levels,
+      ),
+    );
+  const coreHours = codespacesCoreHours(items);
+  if (coreHours !== null)
+    readings.push(
+      toStatus(
+        "github.codespaces_core_hours",
+        coreHours,
+        PROVIDER_LIMITS.githubCodespacesCoreHours,
+        "month",
+        today,
+        levels,
+      ),
+    );
+  return readings;
 }
 
 interface Quota {
