@@ -475,7 +475,8 @@ export async function tokenAlerts(
     for (const s of await loadTargetStatus(env.USAGE)) {
       if (s.ok || s.failCount < FAIL_ALERT_AFTER || !due(s.alertedAt)) continue;
       const t = targets.get(s.target);
-      const who = t ? `${t.client} · ${KIND_LABEL[t.kind]}` : s.target;
+      if (!t) continue; // recorded under an old key (before accounts were keyed by email): not a live check
+      const who = `${t.client} · ${KIND_LABEL[t.kind]}`;
       lines.push(
         `• ${s.token} (${who}) keeps failing${s.okAt ? `, last worked ${day(s.okAt)}` : ""}: ${s.error ?? "unknown error"}`,
       );

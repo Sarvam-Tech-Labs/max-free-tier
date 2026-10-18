@@ -6,29 +6,49 @@ import worker from "../src/index";
 import { buildLedger } from "../src/ledger";
 import { runProviders } from "../src/run";
 import { loadReadings } from "../src/store";
-import { listTokens, loadTargetStatus, requiredTokens, tokensOverview } from "../src/tokens";
-import { type PageData, renderTokensPage } from "../src/views";
+import {
+  listTokens,
+  loadTargetStatus,
+  requiredTokens,
+  saveTargetStatus,
+  tokenAlerts,
+  tokensOverview,
+} from "../src/tokens";
+import { type PageData, renderConsumptionPage, renderTokensPage } from "../src/views";
 import { createFakeD1 } from "./helpers/fake-d1";
 
 const NOW = new Date("2026-10-18T11:00:00Z");
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef").toString("base64");
 const SECRET = "ghp_THIS-IS-A-VERY-SECRET-TOKEN-9z8y";
-const registryGh = {
-  id: "acme",
-  client: "Acme",
-  kind: "github",
-  token: "GH_ACME",
-  account: "acme-co",
-};
+const OWNER = "octo@traders.test";
+
+// Two projects under one email (ops@acme.test), one under another, one with no email at all.
+const client = (id: string, name: string, email: string | undefined, platforms: string[]) => ({
+  id,
+  name,
+  ...(email ? { email } : {}),
+  status: "live",
+  platforms,
+  accounts: [],
+  monitors: [],
+  domains: [],
+});
 const registryClients = [
-  { id: "acme", name: "Acme", email: "ops@acme.test", status: "live", platforms: ["github"] },
-  { id: "beta", name: "Beta Co", email: "beta@beta.test", status: "live", platforms: [] },
+  client("acme", "Acme", "Ops@Acme.test", ["github-actions", "vercel"]),
+  client("acme-web", "Acme Web", "ops@acme.test", ["github-actions"]),
+  client("beta", "Beta Co", "beta@beta.test", []),
+  client("loner", "Loner", undefined, ["github-actions"]),
+];
+const registryTargets = [
+  { id: "acme", client: "Acme", kind: "github", token: "GH_ACME", account: "acme-co" },
+  { id: "acme-web", client: "Acme Web", kind: "github", token: "GH_ACME_WEB", account: "acme-co" },
+  { id: "loner", client: "Loner", kind: "github", token: "GH_LONER", account: "loner-co" },
 ];
 
 const base = (over: Partial<Env> = {}): Env => ({
   USAGE: createFakeD1(),
   TOKEN_ENCRYPTION_KEY: KEY,
-  PROVIDERS_JSON: JSON.stringify([registryGh]),
+  PROVIDERS_JSON: JSON.stringify(registryTargets),
   CLIENTS_JSON: JSON.stringify(registryClients),
   DASHBOARD_PASSWORD: "site-pw",
   ...over,
@@ -73,6 +93,7 @@ function platforms(over: Stub = {}) {
         object: "usage",
         emails: { daily: { used: 3, limit: 100 }, monthly: { used: 30, limit: 3000 } },
       });
+    if (url.startsWith("https://api.telegram.org/")) return new Response("{}", { status: 200 });
     return new Response("{}", { status: 404 });
   });
   return { f: f as unknown as typeof fetch, calls };
@@ -91,127 +112,180 @@ const api = (path: string, method: string, body?: unknown, headers: Record<strin
 const json = async (r: Response) => (await r.json()) as Record<string, unknown>;
 const connect = (e: Env, body: unknown, f: typeof fetch) =>
   handleConnectionApi(api("/api/connections", "POST", body), e, NOW, f);
-const newClient = { name: "Octo Traders", email: "Octo@Traders.test" };
+
+type Target = { id: string; client: string; kind: string; token: string; account?: string };
+const targetsOf = async (e: Env) =>
+  JSON.parse((await withConnections(e)).PROVIDERS_JSON as string) as Target[];
+const clientsOf = async (e: Env) =>
+  JSON.parse((await withConnections(e)).CLIENTS_JSON as string) as Array<
+    ReturnType<typeof client> & { synthetic?: boolean }
+  >;
+
+describe("email-first accounts", () => {
+  it("registry usage is re-keyed from the project to its email; projects under one email share an account", async () => {
+    const t = await targetsOf(base());
+    // GH_ACME and GH_ACME_WEB are both GitHub for ops@acme.test (case-insensitive): one account, the first wins.
+    expect(t.filter((x) => x.kind === "github" && x.id === "ops@acme.test")).toEqual([
+      expect.objectContaining({ token: "GH_ACME", client: "ops@acme.test", account: "acme-co" }),
+    ]);
+    expect(t.some((x) => x.token === "GH_ACME_WEB")).toBe(false);
+    // A project with no email keeps its own identity.
+    expect(t.find((x) => x.token === "GH_LONER")).toMatchObject({ id: "loner", client: "Loner" });
+    expect(t).toHaveLength(2);
+  });
+
+  it("is idempotent and leaves unreadable registry JSON alone; works before the table exists", async () => {
+    const e = base();
+    const once = await withConnections(e);
+    const twice = await withConnections(once);
+    expect(twice.PROVIDERS_JSON).toBe(once.PROVIDERS_JSON);
+    expect(twice.CLIENTS_JSON).toBe(once.CLIENTS_JSON);
+    expect((await withConnections(base({ PROVIDERS_JSON: "{not json" }))).PROVIDERS_JSON).toBe(
+      "{not json",
+    );
+    expect((await withConnections(base({ CLIENTS_JSON: "[" }))).CLIENTS_JSON).toBe("[");
+    await e.USAGE.prepare("DROP TABLE email_connections").run();
+    expect(await targetsOf(e)).toHaveLength(2); // registry only, no crash
+  });
+
+  it("slugOf keeps letters and digits, joins with dashes, and can come out empty", () => {
+    expect(slugOf("  Prasadam (Bhakta Bandhu)! ")).toBe("prasadam-bhakta-bandhu");
+    expect(slugOf("---")).toBe("");
+    expect(slugOf("A".repeat(60)).length).toBe(40);
+  });
+});
 
 describe("POST /api/connections", () => {
-  it("a new client: the account is found from the token, nothing else is typed", async () => {
+  it("an email and a token: the account is found from the token, nothing else is typed", async () => {
     const e = base();
     const p = platforms();
-    const res = await connect(e, { kind: "github", value: SECRET, newClient }, p.f);
+    const res = await connect(
+      e,
+      { kind: "github", value: SECRET, email: ` ${OWNER.toUpperCase()} ` },
+      p.f,
+    );
     const body = await json(res);
     expect(res.status).toBe(200);
-    expect(String(body.detail)).toContain("Connected for Octo Traders (octo-trader)");
+    expect(String(body.detail)).toContain(`Connected for ${OWNER} (octo-trader)`);
     expect(JSON.stringify(body)).not.toContain(SECRET);
-    expect(body.tokenName).toBe("GITHUB_OCTO_TRADERS");
+    expect(body.tokenName).toBe("GITHUB_OCTO_TRADERS_TEST");
 
-    // The GitHub login came from GET /user, and the real check then used it.
-    expect(p.calls[0]?.url).toBe("https://api.github.com/user");
+    expect(p.calls[0]?.url).toBe("https://api.github.com/user"); // login from the token
     expect(p.calls.some((c) => c.url.includes("/users/octo-trader/settings/billing"))).toBe(true);
 
-    // Stored encrypted; one connection row with the lower-cased email.
     const raw = await e.USAGE.prepare("SELECT * FROM tokens").all<Record<string, string>>();
     expect(JSON.stringify(raw.results)).not.toContain(SECRET);
     expect(await loadConnections(e.USAGE)).toMatchObject([
       {
         kind: "github",
-        clientId: "octo-traders",
-        clientName: "Octo Traders",
-        email: "octo@traders.test",
+        email: OWNER,
         account: "octo-trader",
-        tokenName: "GITHUB_OCTO_TRADERS",
+        tokenName: "GITHUB_OCTO_TRADERS_TEST",
       },
     ]);
-    // Readings and a connected status exist at once.
-    expect((await loadReadings(e.USAGE)).map((r) => r.target)).toContain("github:octo-traders");
+    expect((await loadReadings(e.USAGE)).map((r) => r.target)).toContain(`github:${OWNER}`);
     expect(await loadTargetStatus(e.USAGE)).toMatchObject([
-      { target: "github:octo-traders", token: "GITHUB_OCTO_TRADERS", ok: true },
+      { target: `github:${OWNER}`, token: "GITHUB_OCTO_TRADERS_TEST", ok: true },
     ]);
     expect((await listTokens(e.USAGE))[0]).toMatchObject({
-      name: "GITHUB_OCTO_TRADERS",
+      name: "GITHUB_OCTO_TRADERS_TEST",
       last4: "9z8y",
     });
   });
 
-  it("the new client and its platform then appear everywhere: ledger, sidebar emails, token list, hourly checks", async () => {
+  it("a new email appears in the sidebar and everywhere else, without being shown as a project", async () => {
     const e = base();
-    await connect(e, { kind: "github", value: SECRET, newClient }, platforms().f);
+    await connect(e, { kind: "github", value: SECRET, email: OWNER }, platforms().f);
+
+    const clients = await clientsOf(e);
+    const placeholder = clients.find((c) => c.email === OWNER);
+    expect(placeholder).toMatchObject({ synthetic: true, name: OWNER, platforms: ["github"] });
+    expect(clients).toHaveLength(registryClients.length + 1);
 
     const { data } = await buildLedger(e, NOW);
-    expect(data.clients.find((c) => c.id === "octo-traders")).toMatchObject({
-      name: "Octo Traders",
-      email: "octo@traders.test",
-    });
-    expect(
-      data.providers.some((p) => p.clientId === "octo-traders" && p.platform === "github"),
-    ).toBe(true);
+    expect(data.providers.find((p) => p.email === OWNER && p.platform === "github")).toBeTruthy();
     expect(data.targets).toContainEqual({
-      clientId: "octo-traders",
+      clientId: OWNER,
       platform: "github",
-      token: "GITHUB_OCTO_TRADERS",
+      token: "GITHUB_OCTO_TRADERS_TEST",
     });
 
     const o = await tokensOverview(e);
-    expect(o.required.map((r) => r.name)).toEqual(["GH_ACME", "GITHUB_OCTO_TRADERS"]);
+    expect(o.required.map((r) => r.name)).toContain("GITHUB_OCTO_TRADERS_TEST");
     expect(o.connections).toHaveLength(1);
 
-    // The hourly run checks it with the saved token, and keeps checking the registry's own.
+    // The hourly run checks it with the saved token.
     const p = platforms();
     await runProviders(e, new Date("2026-10-18T12:30:00Z"), p.f);
-    const urls = p.calls.map((c) => c.url);
-    expect(urls.some((u) => u.includes("/users/octo-trader/settings/billing"))).toBe(true);
-    expect(urls.some((u) => u.includes("/users/acme-co/settings/billing"))).toBe(false); // no GH_ACME token: not set
-    const auth = p.calls.find((c) => c.url.includes("octo-trader"))?.init.headers as Record<
-      string,
-      string
-    >;
-    expect(auth.Authorization).toBe(`Bearer ${SECRET}`);
+    const used = p.calls.find((c) => c.url.includes("/users/octo-trader/settings/billing"));
+    const auth = (used?.init.headers as Record<string, string> | undefined)?.Authorization;
+    expect(auth).toBe(`Bearer ${SECRET}`);
   });
 
-  it("an existing client keeps its identity; the connection only adds a platform", async () => {
+  it("an email that already has projects just gains the platform", async () => {
     const e = base();
-    const res = await connect(
-      e,
-      { kind: "resend", value: "re_abcdefghijkl", clientId: "beta" },
-      platforms().f,
-    );
-    expect(res.status).toBe(200);
-    const merged = await withConnections(e);
-    const clients = JSON.parse(merged.CLIENTS_JSON as string) as Array<{ id: string }>;
-    expect(clients.filter((c) => c.id === "beta")).toHaveLength(1); // not duplicated
-    expect(clients).toHaveLength(2);
-    const targets = JSON.parse(merged.PROVIDERS_JSON as string) as Array<{
-      id: string;
-      kind: string;
-    }>;
-    expect(targets).toContainEqual(
-      expect.objectContaining({ id: "beta", kind: "resend", token: "RESEND_BETA" }),
+    expect(
+      (
+        await connect(
+          e,
+          { kind: "resend", value: "re_abcdefghijkl", email: "BETA@beta.test" },
+          platforms().f,
+        )
+      ).status,
+    ).toBe(200);
+    expect((await clientsOf(e)).filter((c) => c.email === "beta@beta.test")).toHaveLength(1); // no placeholder
+    expect(await targetsOf(e)).toContainEqual(
+      expect.objectContaining({
+        id: "beta@beta.test",
+        kind: "resend",
+        token: "RESEND_BETA_BETA_TEST",
+      }),
     );
   });
 
-  it("refuses a second connection of the same platform for a client, and one the registry already has", async () => {
+  it("one account per email and platform: refused whether the registry or an earlier connection has it", async () => {
     const e = base();
     const p = platforms();
+    // ops@acme.test already has GitHub from the registry (either of its projects).
+    const reg = await connect(e, { kind: "github", value: SECRET, email: "ops@acme.test" }, p.f);
+    expect(reg.status).toBe(409);
+    expect(String((await json(reg)).error)).toContain("Use Replace");
     expect(
-      (await connect(e, { kind: "resend", value: "re_abcdefghijkl", clientId: "beta" }, p.f))
-        .status,
+      (await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, p.f)).status,
     ).toBe(200);
-    const again = await connect(
+    expect(
+      (
+        await connect(
+          e,
+          { kind: "resend", value: "re_zzzzzzzzzzzz", email: OWNER.toUpperCase() },
+          p.f,
+        )
+      ).status,
+    ).toBe(409);
+    expect(await loadConnections(e.USAGE)).toHaveLength(1);
+    expect(await listTokens(e.USAGE)).toHaveLength(1); // a refused token is never saved
+  });
+
+  it("the same platform for a different email is a separate account", async () => {
+    const e = base();
+    const p = platforms();
+    await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, p.f);
+    const other = await connect(
       e,
-      { kind: "resend", value: "re_zzzzzzzzzzzz", clientId: "beta" },
+      { kind: "resend", value: "re_zzzzzzzzzzzz", email: "two@traders.test" },
       p.f,
     );
-    expect(again.status).toBe(409);
-    expect(String((await json(again)).error)).toContain("Use Replace");
-    const reg = await connect(e, { kind: "github", value: SECRET, clientId: "acme" }, p.f);
-    expect(reg.status).toBe(409);
-    expect(await loadConnections(e.USAGE)).toHaveLength(1);
-    expect(await listTokens(e.USAGE)).toHaveLength(1); // the refused token was never saved
+    expect(other.status).toBe(200);
+    expect(await loadConnections(e.USAGE)).toHaveLength(2);
   });
 
   it("a platform that rejects the token: the reason is shown and nothing is saved", async () => {
     const e = base();
-    const p = platforms({ github: () => new Response("no", { status: 401 }) });
-    const res = await connect(e, { kind: "github", value: SECRET, newClient }, p.f);
+    const res = await connect(
+      e,
+      { kind: "github", value: SECRET, email: OWNER },
+      platforms({ github: () => new Response("no", { status: 401 }) }).f,
+    );
     expect(res.status).toBe(422);
     const body = await json(res);
     expect(String(body.error)).toContain("GitHub rejected this token (HTTP 401)");
@@ -227,39 +301,40 @@ describe("POST /api/connections", () => {
         ? Response.json({ login: "octo" })
         : new Response("", { status: 403 }),
     ) as unknown as typeof fetch;
-    const res = await connect(e, { kind: "github", value: SECRET, newClient }, f);
-    expect(res.status).toBe(422);
+    expect((await connect(e, { kind: "github", value: SECRET, email: OWNER }, f)).status).toBe(422);
     expect(await loadConnections(e.USAGE)).toEqual([]);
   });
 
-  it("GitHub organization billing: the organization is used as given, without asking GitHub whose token it is", async () => {
+  it("GitHub organization billing: the organization is used as given, without asking whose token it is", async () => {
     const e = base();
     const p = platforms();
-    const res = await connect(
-      e,
-      { kind: "github", value: SECRET, newClient, org: "octo-org" },
-      p.f,
-    );
-    expect(res.status).toBe(200);
+    expect(
+      (await connect(e, { kind: "github", value: SECRET, email: OWNER, org: "octo-org" }, p.f))
+        .status,
+    ).toBe(200);
     expect(p.calls.some((c) => c.url === "https://api.github.com/user")).toBe(false);
     expect(p.calls.some((c) => c.url.includes("/organizations/octo-org/settings/billing"))).toBe(
       true,
     );
     expect((await loadConnections(e.USAGE))[0]).toMatchObject({ account: "octo-org", org: true });
     expect(
-      (await connect(base(), { kind: "github", value: SECRET, newClient, org: "bad org!" }, p.f))
+      (await connect(base(), { kind: "github", value: SECRET, email: OWNER, org: "bad org!" }, p.f))
         .status,
     ).toBe(400);
+    const none = await connect(
+      base(),
+      { kind: "github", value: SECRET, email: OWNER },
+      platforms({ github: () => Response.json({}) }).f,
+    );
+    expect(none.status).toBe(422);
   });
 
   it("Vercel: one team is used; several ask which; none explains; a wrong pick is refused", async () => {
     const one = base();
-    const ok = await connect(
-      one,
-      { kind: "vercel", value: "vercel-token-1", newClient },
-      platforms().f,
-    );
-    expect(ok.status).toBe(200);
+    expect(
+      (await connect(one, { kind: "vercel", value: "vercel-token-1", email: OWNER }, platforms().f))
+        .status,
+    ).toBe(200);
     expect((await loadConnections(one.USAGE))[0]).toMatchObject({
       kind: "vercel",
       account: "team_1",
@@ -275,7 +350,7 @@ describe("POST /api/connections", () => {
     const e = base();
     const asked = await connect(
       e,
-      { kind: "vercel", value: "vercel-token-1", newClient },
+      { kind: "vercel", value: "vercel-token-1", email: OWNER },
       platforms({ teams: many }).f,
     );
     expect(asked.status).toBe(409);
@@ -286,38 +361,49 @@ describe("POST /api/connections", () => {
     expect(await loadConnections(e.USAGE)).toEqual([]);
     const picked = await connect(
       e,
-      { kind: "vercel", value: "vercel-token-1", newClient, team: "team_b" },
+      { kind: "vercel", value: "vercel-token-1", email: OWNER, team: "team_b" },
       platforms({ teams: many }).f,
     );
     expect(picked.status).toBe(200);
     expect((await loadConnections(e.USAGE))[0]).toMatchObject({ account: "team_b" });
-    const wrong = await connect(
-      base(),
-      { kind: "vercel", value: "vercel-token-1", newClient, team: "team_zzz" },
-      platforms({ teams: many }).f,
-    );
-    expect(wrong.status).toBe(400);
+    expect(
+      (
+        await connect(
+          base(),
+          { kind: "vercel", value: "vercel-token-1", email: OWNER, team: "team_zzz" },
+          platforms({ teams: many }).f,
+        )
+      ).status,
+    ).toBe(400);
 
     const none = await connect(
       base(),
-      { kind: "vercel", value: "vercel-token-1", newClient },
+      { kind: "vercel", value: "vercel-token-1", email: OWNER },
       platforms({ teams: () => Response.json({ teams: [] }) }).f,
     );
     expect(none.status).toBe(422);
     expect(String((await json(none)).error)).toContain("no team");
-    const denied = await connect(
-      base(),
-      { kind: "vercel", value: "vercel-token-1", newClient },
-      platforms({ teams: () => new Response("", { status: 403 }) }).f,
-    );
-    expect(denied.status).toBe(422);
+    expect(
+      (
+        await connect(
+          base(),
+          { kind: "vercel", value: "vercel-token-1", email: OWNER },
+          platforms({ teams: () => new Response("", { status: 403 }) }).f,
+        )
+      ).status,
+    ).toBe(422);
   });
 
   it("Supabase: the projects are found from the token (removed ones skipped); none is explained", async () => {
     const e = base();
     expect(
-      (await connect(e, { kind: "supabase", value: "sbp_abcdefghijk", newClient }, platforms().f))
-        .status,
+      (
+        await connect(
+          e,
+          { kind: "supabase", value: "sbp_abcdefghijk", email: OWNER },
+          platforms().f,
+        )
+      ).status,
     ).toBe(200);
     expect((await loadConnections(e.USAGE))[0]).toMatchObject({
       kind: "supabase",
@@ -325,67 +411,58 @@ describe("POST /api/connections", () => {
     });
     const none = await connect(
       base(),
-      { kind: "supabase", value: "sbp_abcdefghijk", newClient },
+      { kind: "supabase", value: "sbp_abcdefghijk", email: OWNER },
       platforms({ projects: () => Response.json([]) }).f,
     );
     expect(none.status).toBe(422);
     expect(String((await json(none)).error)).toContain("no projects");
-    const bad = await connect(
-      base(),
-      { kind: "supabase", value: "sbp_abcdefghijk", newClient },
-      platforms({ projects: () => new Response("", { status: 401 }) }).f,
-    );
-    expect(bad.status).toBe(422);
+    expect(
+      (
+        await connect(
+          base(),
+          { kind: "supabase", value: "sbp_abcdefghijk", email: OWNER },
+          platforms({ projects: () => new Response("", { status: 401 }) }).f,
+        )
+      ).status,
+    ).toBe(422);
   });
 
   it("validates the request before touching any platform", async () => {
     const e = base();
     const p = platforms();
     const status = async (body: unknown) => (await connect(e, body, p.f)).status;
-    expect(await status({ value: SECRET, newClient })).toBe(400); // no platform
-    expect(await status({ kind: "nope", value: SECRET, newClient })).toBe(400);
-    expect(await status({ kind: "github", value: "short", newClient })).toBe(400);
-    expect(await status({ kind: "github", value: "has a space in it", newClient })).toBe(400);
+    expect(await status({ value: SECRET, email: OWNER })).toBe(400); // no platform
+    expect(await status({ kind: "nope", value: SECRET, email: OWNER })).toBe(400);
+    expect(await status({ kind: "github", value: SECRET })).toBe(400); // no email
+    expect(await status({ kind: "github", value: SECRET, email: "not-an-email" })).toBe(400);
     expect(
-      await status({ kind: "github", value: SECRET, newClient: { name: "X", email: "a@b.test" } }),
+      await status({ kind: "github", value: SECRET, email: `${"a".repeat(250)}@b.test` }),
     ).toBe(400);
-    expect(
-      await status({
-        kind: "github",
-        value: SECRET,
-        newClient: { name: "Octo", email: "not-an-email" },
-      }),
-    ).toBe(400);
-    expect(
-      await status({
-        kind: "github",
-        value: SECRET,
-        newClient: { name: "!!!", email: "a@b.test" },
-      }),
-    ).toBe(400);
-    expect(await status({ kind: "github", value: SECRET })).toBe(400); // neither client nor newClient
-    expect(await status({ kind: "github", value: SECRET, clientId: "ghost" })).toBe(404);
-    expect(await status({ kind: "github", value: SECRET, newClient, expires: "tomorrow" })).toBe(
+    expect(await status({ kind: "github", value: "short", email: OWNER })).toBe(400);
+    expect(await status({ kind: "github", value: "has a space in it", email: OWNER })).toBe(400);
+    expect(await status({ kind: "github", value: SECRET, email: OWNER, expires: "tomorrow" })).toBe(
       400,
     );
-    expect(await status({ kind: "github", value: SECRET, newClient, expires: "2020-01-01" })).toBe(
-      400,
-    );
+    expect(
+      await status({ kind: "github", value: SECRET, email: OWNER, expires: "2020-01-01" }),
+    ).toBe(400);
     expect(p.calls).toHaveLength(0);
   });
 
-  it("an explicit expiry is kept; a second new client with a clashing name gets its own id", async () => {
+  it("an explicit expiry is kept; two emails whose names collide get distinct token names", async () => {
     const e = base();
     const p = platforms();
     await connect(
       e,
-      { kind: "resend", value: "re_abcdefghijkl", newClient, expires: "2027-03-01" },
+      { kind: "resend", value: "re_abcdefghijkl", email: "a.b@x.test", expires: "2027-03-01" },
       p.f,
     );
     expect((await listTokens(e.USAGE))[0]?.expiresAt).toBe("2027-03-01T23:59:59.000Z");
-    const second = await json(await connect(e, { kind: "github", value: SECRET, newClient }, p.f));
-    expect(second.clientId).toBe("octo-traders-2");
-    expect(second.tokenName).toBe("GITHUB_OCTO_TRADERS_2");
+    // "a.b@x.test" and "a_b@x.test" both become RESEND_A_B_X_TEST.
+    const second = await json(
+      await connect(e, { kind: "resend", value: "re_zzzzzzzzzzzz", email: "a_b@x.test" }, p.f),
+    );
+    expect(second.tokenName).toBe("RESEND_A_B_X_TEST_2");
   });
 
   it("refuses without the site header or the encryption key, and wrong methods and paths", async () => {
@@ -394,7 +471,7 @@ describe("POST /api/connections", () => {
     const noHeader = new Request("https://x.test/api/connections", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "resend", value: "re_abcdefghijkl", newClient }),
+      body: JSON.stringify({ kind: "resend", value: "re_abcdefghijkl", email: OWNER }),
     });
     expect((await handleConnectionApi(noHeader, e, NOW, p.f)).status).toBe(403);
     expect(
@@ -426,7 +503,7 @@ describe("POST /api/connections", () => {
 describe("DELETE /api/connections/ID", () => {
   it("disconnects: the connection, its token and its readings go; the registry's own stays", async () => {
     const e = base();
-    await connect(e, { kind: "github", value: SECRET, newClient }, platforms().f);
+    await connect(e, { kind: "github", value: SECRET, email: OWNER }, platforms().f);
     const [c] = await loadConnections(e.USAGE);
     const res = await handleConnectionApi(
       api(`/api/connections/${c?.id}`, "DELETE"),
@@ -439,7 +516,11 @@ describe("DELETE /api/connections/ID", () => {
     expect(await listTokens(e.USAGE)).toEqual([]);
     expect(await loadReadings(e.USAGE)).toEqual([]);
     expect(await loadTargetStatus(e.USAGE)).toEqual([]);
-    expect(requiredTokens(await withConnections(e)).map((r) => r.name)).toEqual(["GH_ACME"]);
+    expect(requiredTokens(await withConnections(e)).map((r) => r.name)).toEqual([
+      "GH_ACME",
+      "GH_LONER",
+    ]);
+    expect((await clientsOf(e)).some((x) => x.synthetic)).toBe(false); // the placeholder goes with the last connection
     expect(
       (await handleConnectionApi(api(`/api/connections/${c?.id}`, "DELETE"), e, NOW, platforms().f))
         .status,
@@ -451,60 +532,7 @@ describe("DELETE /api/connections/ID", () => {
   });
 });
 
-describe("withConnections", () => {
-  it("is idempotent, never overrides a registry target, and leaves unreadable registry JSON alone", async () => {
-    const e = base();
-    await connect(e, { kind: "github", value: SECRET, newClient }, platforms().f);
-    await e.USAGE.prepare(
-      "INSERT INTO connections (id, kind, client_id, client_name, email, account, org, projects, token_name, created_at) VALUES ('x','github','acme','Acme',NULL,'someone',0,NULL,'GH_OTHER','2026-10-01T00:00:00Z')",
-    ).run();
-    const once = await withConnections(e);
-    const twice = await withConnections(once);
-    expect(twice.PROVIDERS_JSON).toBe(once.PROVIDERS_JSON);
-    expect(twice.CLIENTS_JSON).toBe(once.CLIENTS_JSON);
-    const targets = JSON.parse(once.PROVIDERS_JSON as string) as Array<{
-      id: string;
-      kind: string;
-      account?: string;
-    }>;
-    expect(targets.filter((t) => t.id === "acme")).toEqual([
-      expect.objectContaining({ account: "acme-co" }),
-    ]); // registry wins
-
-    const broken = base({ PROVIDERS_JSON: "{not json" });
-    await broken.USAGE.prepare(
-      "INSERT INTO connections (id, kind, client_id, client_name, email, account, org, projects, token_name, created_at) VALUES ('y','github','n','N',NULL,'n',0,'not json','GH_N','2026-10-01T00:00:00Z')",
-    ).run();
-    expect((await withConnections(broken)).PROVIDERS_JSON).toBe("{not json");
-    expect((await loadConnections(broken.USAGE))[0]?.projects).toEqual([]); // a corrupt list costs only the list
-  });
-
-  it("without the table (not migrated yet) the registry alone is used", async () => {
-    const e = base();
-    await e.USAGE.prepare("DROP TABLE connections").run();
-    expect(await withConnections(e)).toBe(e);
-  });
-
-  it("names a new client's platforms once even with several connections", async () => {
-    const e = base();
-    const p = platforms();
-    await connect(e, { kind: "github", value: SECRET, newClient }, p.f);
-    await connect(e, { kind: "resend", value: "re_abcdefghijkl", clientId: "octo-traders" }, p.f);
-    const clients = JSON.parse((await withConnections(e)).CLIENTS_JSON as string) as Array<{
-      id: string;
-      platforms: string[];
-    }>;
-    expect(clients.filter((c) => c.id === "octo-traders")).toHaveLength(1);
-  });
-
-  it("slugOf keeps letters and digits, joins with dashes, and can come out empty", () => {
-    expect(slugOf("  Prasadam (Bhakta Bandhu)! ")).toBe("prasadam-bhakta-bandhu");
-    expect(slugOf("---")).toBe("");
-    expect(slugOf("A".repeat(60)).length).toBe(40);
-  });
-});
-
-describe("the Tokens page", () => {
+describe("pages", () => {
   const dataFor = async (e: Env): Promise<PageData> => ({
     ledger: await buildLedger(e, NOW),
     health: { uptime: { ok: false, monitors: [] } as never, domains: [], now: NOW },
@@ -513,40 +541,62 @@ describe("the Tokens page", () => {
     tz: "Asia/Kolkata",
   });
 
-  it("offers Connect a platform with every client, and marks connected rows with Disconnect", async () => {
+  it("Consumption: an email's platform account is one card, with the projects that use it", async () => {
     const e = base();
-    await connect(e, { kind: "resend", value: "re_abcdefghijkl", newClient }, platforms().f);
+    const p = platforms();
+    await runProviders(e, NOW, p.f); // no tokens yet: nothing connected
+    await e.USAGE.prepare(
+      "INSERT INTO tokens (name, ciphertext, iv, last4, created_at, updated_at) VALUES ('GH_ACME','x','y','abcd','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')",
+    ).run();
+    const ledger = await buildLedger(e, NOW);
+    const html = renderConsumptionPage({ ...(await dataFor(e)), ledger }, "ops@acme.test");
+    expect(html).toContain("Used by Acme, Acme Web"); // both projects share the one GitHub account
+    expect(html).toContain("Waiting for"); // its token is not saved yet
+    expect(html).toContain("GH_ACME");
+  });
+
+  it("an email that only has connections is listed without a fake project", async () => {
+    const e = base();
+    await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, platforms().f);
+    const html = renderConsumptionPage(await dataFor(e), OWNER);
+    expect(html).toContain(OWNER);
+    expect(html).toContain("Emails per day");
+    expect(html).not.toContain("Used by");
+    expect(html).not.toContain(`<span class="badge">${OWNER}</span>`);
+  });
+
+  it("Tokens: Connect a platform asks for an email (with the known ones suggested); connected rows can be disconnected", async () => {
+    const e = base();
+    await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, platforms().f);
     const html = renderTokensPage(await dataFor(e), await tokensOverview(e));
     expect(html).toContain("data-connect-open");
     expect(html).toContain('id="connect-dialog"');
-    expect(html).toContain('<option value="beta">Beta Co · beta@beta.test</option>');
-    expect(html).toContain(
-      '<option value="octo-traders">Octo Traders · octo@traders.test</option>',
-    );
-    expect(html).toContain('<option value="__new__">A new client…</option>');
-    expect(html).toContain('data-kind-help="vercel"');
+    expect(html).toContain('name="email" type="email" list="c-emails"');
+    expect(html).toContain('<option value="beta@beta.test">');
+    expect(html).toContain('<option value="ops@acme.test">');
+    expect(html).not.toContain("Which client is this for?");
     expect(html).toContain("On the site");
     expect(html).toContain("data-connection-delete=");
-    expect(html).not.toContain('data-token-delete="RESEND_OCTO_TRADERS"'); // Disconnect replaces Delete for a connection
+    expect(html).not.toContain('data-token-delete="RESEND_OCTO_TRADERS_TEST"'); // Disconnect replaces Delete
+    expect(html).toContain("Used by Acme, Acme Web"); // on the registry's GitHub row
+    // Grouped by the owning email: ops@acme.test before octo@… is alphabetical on the label.
+    expect(html.indexOf("GH_ACME")).toBeGreaterThan(-1);
   });
 
-  it("a connection whose token was deleted still shows Add token and Disconnect; names are escaped", async () => {
+  it("a connection whose token was deleted still shows Add token and Disconnect; emails are escaped", async () => {
     const e = base();
     await connect(
       e,
-      {
-        kind: "resend",
-        value: "re_abcdefghijkl",
-        newClient: { name: "<b>x</b>y", email: "a@b.test" },
-      },
+      { kind: "resend", value: "re_abcdefghijkl", email: "x<b>y@z.test" },
       platforms().f,
-    );
+    ).catch(() => {});
+    // An email with markup is not a valid address, so nothing was created; use a valid one and delete its token.
+    await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, platforms().f);
     await e.USAGE.prepare("DELETE FROM tokens").run();
     const html = renderTokensPage(await dataFor(e), await tokensOverview(e));
     expect(html).toContain('data-mode="add"');
     expect(html).toContain("Disconnect");
-    expect(html).not.toContain("<b>x</b>y");
-    expect(html).toContain("&lt;b&gt;x&lt;/b&gt;y");
+    expect(html).not.toContain("x<b>y");
   });
 
   it("with no usage blocks and no connections it says nothing is connected yet", async () => {
@@ -554,6 +604,36 @@ describe("the Tokens page", () => {
     expect(renderTokensPage(await dataFor(e), await tokensOverview(e))).toContain(
       "Nothing is connected yet",
     );
+  });
+});
+
+describe("alerts", () => {
+  it("a status recorded under an old per-project key is ignored, not alerted forever", async () => {
+    const e = base({ TELEGRAM_BOT_TOKEN: "bot", TELEGRAM_CHAT_ID: "-1" });
+    const p = platforms();
+    for (let i = 0; i < 3; i++)
+      await saveTargetStatus(
+        e.USAGE,
+        "github:acme",
+        "GH_ACME",
+        false,
+        "old failure",
+        NOW.toISOString(),
+      );
+    expect(await tokenAlerts(await withConnections(e), NOW, p.f)).toEqual([]);
+    expect(p.calls.filter((c) => c.url.includes("telegram"))).toHaveLength(0);
+    // The same failures under the email key do alert.
+    for (let i = 0; i < 3; i++)
+      await saveTargetStatus(
+        e.USAGE,
+        "github:ops@acme.test",
+        "GH_ACME",
+        false,
+        "new failure",
+        NOW.toISOString(),
+      );
+    await tokenAlerts(await withConnections(e), NOW, p.f);
+    expect(p.calls.filter((c) => c.url.includes("telegram"))).toHaveLength(1);
   });
 });
 
@@ -573,8 +653,7 @@ describe("routing", () => {
       );
     expect((await post({})).status).toBe(401);
     expect((await post(basic)).status).toBe(403); // right password, but no site header
-    const withHeader = await post({ ...basic, "X-Requested-With": "max-free-tier" });
-    expect(withHeader.status).toBe(400); // reached the handler: no platform picked
+    expect((await post({ ...basic, "X-Requested-With": "max-free-tier" })).status).toBe(400); // reached the handler
     const page = await worker.fetch(new Request("https://x.test/tokens", { headers: basic }), e);
     expect(page.status).toBe(200);
     expect(await page.text()).toContain("Connect a platform");

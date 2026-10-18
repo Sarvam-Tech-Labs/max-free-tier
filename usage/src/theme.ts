@@ -260,22 +260,19 @@ const SCRIPT = `
     });
     const cd=document.getElementById('connect-dialog');
     if(cd){
-      const c=s=>cd.querySelector(s),ce=c('[data-err]'),ck=c('[name=kind]'),cv=c('[name=value]'),cc=c('[name=client]'),cn=c('[data-new]'),
-        cname=c('[name=newName]'),cmail=c('[name=newEmail]'),corg=c('[name=org]'),cteam=c('[name=team]'),cx=c('[name=expires]'),cs=c('[data-save]'),
+      const c=s=>cd.querySelector(s),ce=c('[data-err]'),ck=c('[name=kind]'),cv=c('[name=value]'),cem=c('[name=email]'),corg=c('[name=org]'),cteam=c('[name=team]'),cx=c('[name=expires]'),cs=c('[data-save]'),
         gh=c('[data-github]'),tm=c('[data-team]'),box=c('[data-kind-box]');
       const sync=()=>{
         const t=document.querySelector('template[data-kind-help="'+ck.value+'"]');box.replaceChildren(t?t.content.cloneNode(true):'');
         gh.hidden=ck.value!=='github';if(ck.value!=='vercel'){tm.hidden=true;cteam.replaceChildren()}
-        cn.hidden=cc.value!=='__new__';
       };
-      const reset=()=>{cv.value='';cx.value='';corg.value='';cname.value='';cmail.value='';ce.hidden=true;cs.disabled=false;cs.textContent='Verify and connect';tm.hidden=true;cteam.replaceChildren();sync()};
+      const reset=()=>{cv.value='';cx.value='';corg.value='';cem.value='';ce.hidden=true;cs.disabled=false;cs.textContent='Verify and connect';tm.hidden=true;cteam.replaceChildren();sync()};
       document.querySelectorAll('[data-connect-open]').forEach(b=>b.addEventListener('click',()=>{reset();cd.showModal();cv.focus()}));
-      ck.addEventListener('change',sync);cc.addEventListener('change',sync);
+      ck.addEventListener('change',sync);
       cd.addEventListener('close',reset);c('[data-cancel]').addEventListener('click',()=>cd.close());
       c('form').addEventListener('submit',async e=>{
         e.preventDefault();cs.disabled=true;ce.hidden=true;cs.textContent='Verifying…';
-        const body={kind:ck.value,value:cv.value,expires:cx.value||undefined};
-        if(cc.value==='__new__')body.newClient={name:cname.value,email:cmail.value};else body.clientId=cc.value;
+        const body={kind:ck.value,value:cv.value,email:cem.value,expires:cx.value||undefined};
         if(ck.value==='github'&&corg.value.trim())body.org=corg.value.trim();
         if(ck.value==='vercel'&&!tm.hidden&&cteam.value)body.team=cteam.value;
         const r=await call('/api/connections','POST',body);

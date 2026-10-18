@@ -13,9 +13,11 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 - **No secrets in git.** Tokens live in GitHub Actions secrets, Worker secrets, and (platform tokens) encrypted in D1 via the
   site's Tokens page (`usage/src/tokens.ts`, key = TOKEN_ENCRYPTION_KEY). Never ask the user to paste a token into chat.
 - **Connecting a platform is self-service on the site** (Tokens page → Connect a platform: `usage/src/connect.ts`,
-  `connections.ts`, table `connections`). It needs no registry edit and no deploy, so when the user wants GitHub / Resend /
-  Supabase / Vercel connected for a client, point them there rather than adding a `usage:` block. Registry `usage:` blocks
-  still work and win over a connection for the same client and platform.
+  `connections.ts`, table `email_connections`). It needs no registry edit and no deploy, so when the user wants GitHub /
+  Resend / Supabase / Vercel connected, point them there rather than adding a `usage:` block. **Data model: the EMAIL is the
+  identity.** One account per (email, platform) holds the one token; projects (registry clients) hang off the email and list
+  the platforms they use. Never model a token or a meter per project. Registry `usage:` blocks are re-keyed to the client's
+  email at read time (`withConnections`) and win over a site connection for the same email and platform.
 - **Reuse before building.** FlareWatch and usage-guard-collector are vendored `git subtree`s; urlwatch is installed.
   Fix gaps upstream-first (`docs/UPSTREAM.md`); keep our own code to the registry, generator and glue.
 - Client Cloudflare accounts belong to the clients: read-only analytics access only.

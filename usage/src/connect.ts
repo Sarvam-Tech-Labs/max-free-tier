@@ -1,12 +1,13 @@
 /**
- * Connect a platform from the site: paste a token, say which client it is for, and the account is found from the token.
+ * Connect a platform from the site: paste a token and say which email it belongs to; the account is found from the token.
+ * An email has one connection per platform (usage is per platform account); its projects are the registry's clients.
  *
- *   POST   /api/connections        { kind, value, clientId | newClient:{name,email}, expires?, team?, org? }
+ *   POST   /api/connections        { kind, value, email, expires?, team?, org? }
  *   DELETE /api/connections/ID     disconnect: forget the connection, its token and what it produced
  *
  * Same protections as the token API (tokens.ts `guard`). Nothing here returns a token.
  */
-import { loadConnections, slugOf, targetOf, withConnections } from "./connections";
+import { loadConnections, targetOf, withConnections } from "./connections";
 import { seal } from "./crypto";
 import type { Env } from "./env";
 import {
@@ -140,9 +141,9 @@ async function discover(
   });
 }
 
-/** A token name nobody else uses: KIND_CLIENT, then _2, _3… */
-function freshTokenName(kind: ProviderKind, clientId: string, taken: ReadonlySet<string>): string {
-  const base = `${kind}_${clientId}`
+/** A token name nobody else uses: KIND_EMAIL, then _2, _3… */
+function freshTokenName(kind: ProviderKind, email: string, taken: ReadonlySet<string>): string {
+  const base = `${kind}_${email}`
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, "_")
     .slice(0, 58);
@@ -179,13 +180,13 @@ export async function handleConnectionApi(
     }
     const conn = (await loadConnections(env.USAGE)).find((c) => c.id === id);
     if (!conn) return reply(404, { ok: false, error: "No such connection." });
-    await env.USAGE.prepare("DELETE FROM connections WHERE id = ?1").bind(id).run();
+    await env.USAGE.prepare("DELETE FROM email_connections WHERE id = ?1").bind(id).run();
     await deleteToken(env.USAGE, conn.tokenName);
     await clearTargets(env.USAGE, [targetKey(targetOf(conn))], conn.tokenName);
     await logAlert(
       env.USAGE,
       "tokens",
-      `Disconnected ${KIND_LABEL[conn.kind]} for ${conn.clientName}`,
+      `Disconnected ${KIND_LABEL[conn.kind]} for ${conn.email}`,
       iso,
     );
     return reply(200, { ok: true });
@@ -197,8 +198,7 @@ export async function handleConnectionApi(
   let body: {
     kind?: unknown;
     value?: unknown;
-    clientId?: unknown;
-    newClient?: { name?: unknown; email?: unknown };
+    email?: unknown;
     expires?: unknown;
     team?: unknown;
     org?: unknown;
@@ -211,6 +211,13 @@ export async function handleConnectionApi(
 
   const kind = KINDS.find((k) => k === body?.kind);
   if (!kind) return reply(400, { ok: false, error: "Pick a platform." });
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  if (email.length > 254 || !EMAIL.test(email)) {
+    return reply(400, {
+      ok: false,
+      error: "Enter the email this platform account is registered with.",
+    });
+  }
   const value = typeof body.value === "string" ? body.value.trim() : "";
   if (value.length < MIN_TOKEN || value.length > MAX_TOKEN || /\s/.test(value)) {
     return reply(400, {
@@ -224,46 +231,19 @@ export async function handleConnectionApi(
   if (expires !== null && Date.parse(expires) <= now.getTime())
     return reply(400, { ok: false, error: "That expiry date has already passed." });
 
-  // Who owns it: an existing client (registry or an earlier connection), or a new one with its email.
+  // One account per email and platform, whether it came from the registry or from an earlier connection.
   const merged = await withConnections(env);
-  let existing: Array<{ id?: string; name?: string }> = [];
   let targets: ProviderTarget[] = [];
   try {
-    const c: unknown = JSON.parse(merged.CLIENTS_JSON || "[]");
-    if (Array.isArray(c)) existing = c;
     const t: unknown = JSON.parse(merged.PROVIDERS_JSON || "[]");
     if (Array.isArray(t)) targets = t as ProviderTarget[];
   } catch {
     // Unreadable registry JSON: treat as empty; the run log reports it.
   }
-  let clientId: string;
-  let clientName: string;
-  let email: string | null = null;
-  if (typeof body.clientId === "string" && body.clientId !== "") {
-    const c = existing.find((x) => x.id === body.clientId);
-    if (!c?.id) return reply(404, { ok: false, error: "No such client." });
-    clientId = c.id;
-    clientName = c.name ?? c.id;
-  } else {
-    const name = typeof body.newClient?.name === "string" ? body.newClient.name.trim() : "";
-    const mail =
-      typeof body.newClient?.email === "string" ? body.newClient.email.trim().toLowerCase() : "";
-    if (name.length < 2 || name.length > 80)
-      return reply(400, { ok: false, error: "Give the new client a name (2–80 characters)." });
-    if (mail.length > 254 || !EMAIL.test(mail))
-      return reply(400, { ok: false, error: "Give the email this client's accounts use." });
-    const base = slugOf(name);
-    if (!base) return reply(400, { ok: false, error: "The client name needs letters or digits." });
-    const used = new Set(existing.map((x) => x.id));
-    clientId = base;
-    for (let n = 2; used.has(clientId); n++) clientId = `${base}-${n}`;
-    clientName = name;
-    email = mail;
-  }
-  if (targets.some((t) => t.id === clientId && t.kind === kind)) {
+  if (targets.some((t) => t.id === email && t.kind === kind)) {
     return reply(409, {
       ok: false,
-      error: `${clientName} already has ${KIND_LABEL[kind]} connected. Use Replace on its row to change the token.`,
+      error: `${email} already has ${KIND_LABEL[kind]} connected. Use Replace on its row to change the token.`,
     });
   }
 
@@ -276,10 +256,10 @@ export async function handleConnectionApi(
     ...Object.keys(safeSecretTokens(env)),
     ...(await listTokens(env.USAGE)).map((t) => t.name),
   ]);
-  const tokenName = freshTokenName(kind, clientId, taken);
+  const tokenName = freshTokenName(kind, email, taken);
   const target: ProviderTarget = {
-    id: clientId,
-    client: clientName,
+    id: email,
+    client: email,
     kind,
     token: tokenName,
     ...(found.found.account ? { account: found.found.account } : {}),
@@ -305,15 +285,13 @@ export async function handleConnectionApi(
   );
   try {
     await env.USAGE.prepare(
-      `INSERT INTO connections (id, kind, client_id, client_name, email, account, org, projects, token_name, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+      `INSERT INTO email_connections (id, email, kind, account, org, projects, token_name, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
     )
       .bind(
         id,
-        kind,
-        clientId,
-        clientName,
         email,
+        kind,
         found.found.account ?? null,
         found.found.org ? 1 : 0,
         found.found.projects ? JSON.stringify(found.found.projects) : null,
@@ -325,16 +303,16 @@ export async function handleConnectionApi(
     await deleteToken(env.USAGE, tokenName); // no token without its connection
     return reply(409, {
       ok: false,
-      error: `${clientName} already has ${KIND_LABEL[kind]} connected.`,
+      error: `${email} already has ${KIND_LABEL[kind]} connected.`,
     });
   }
   await persistVerified(env, tokenName, verified, iso);
-  await logAlert(env.USAGE, "tokens", `Connected ${KIND_LABEL[kind]} for ${clientName}`, iso);
+  await logAlert(env.USAGE, "tokens", `Connected ${KIND_LABEL[kind]} for ${email}`, iso);
   const where = found.found.account ?? found.found.projects?.join(", ");
   return reply(200, {
     ok: true,
-    detail: `${describeVerified(kind, verified)} Connected for ${clientName}${where ? ` (${where})` : ""}.`,
+    detail: `${describeVerified(kind, verified)} Connected for ${email}${where ? ` (${where})` : ""}.`,
     tokenName,
-    clientId,
+    email,
   });
 }

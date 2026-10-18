@@ -1,19 +1,23 @@
 /**
- * Platforms connected on the site (Tokens page → Connect a platform), kept in D1 next to the registry's own. At read time
- * `withConnections` folds them into PROVIDERS_JSON (what to check) and CLIENTS_JSON (who owns it), so the hourly checks, the
- * Consumption page, the Tokens page and the alerts all see them with no other change. The registry always wins: a
- * connection never replaces a registry target for the same client and platform.
- * No secrets here: the token is in `tokens` (tokens.ts), encrypted.
+ * Email-first accounts. An email owns one account per platform (one GitHub token, one Vercel token, one Resend key…), and
+ * its projects (the registry's clients) are what runs on those accounts. Usage is per platform account, so the token and the
+ * meters belong to (email, platform), never to a project.
+ *
+ * Connections made on the site (Tokens → Connect a platform) live in D1. At read time `withConnections` rewrites the
+ * environment so everything downstream sees that one model:
+ *   - registry `usage:` targets are re-keyed from their client to the client's email (several clients under one email that
+ *     name the same platform share one account; the first wins),
+ *   - site connections are added unless the registry already covers that email and platform (the registry wins),
+ *   - an email with a connection but no registry client gets a placeholder entry so it appears in the Consumption sidebar.
+ * A registry client with no email keeps its own identity. No secrets here: the token is in `tokens` (tokens.ts), encrypted.
  */
 import type { Env } from "./env";
 import type { ProviderKind, ProviderTarget } from "./providers";
 
 export interface Connection {
   id: string;
+  email: string;
   kind: ProviderKind;
-  clientId: string;
-  clientName: string;
-  email: string | null;
   account: string | null;
   org: boolean;
   projects: string[];
@@ -21,24 +25,16 @@ export interface Connection {
   createdAt: string;
 }
 
-interface Row {
-  id: string;
-  kind: ProviderKind;
-  clientId: string;
-  clientName: string;
-  email: string | null;
-  account: string | null;
+interface Row extends Omit<Connection, "org" | "projects"> {
   org: number;
   projects: string | null;
-  tokenName: string;
-  createdAt: string;
 }
 
 export async function loadConnections(db: D1Database): Promise<Connection[]> {
   const res = await db
     .prepare(
-      `SELECT id, kind, client_id AS clientId, client_name AS clientName, email, account, org, projects,
-              token_name AS tokenName, created_at AS createdAt FROM connections ORDER BY client_name, kind`,
+      `SELECT id, email, kind, account, org, projects, token_name AS tokenName, created_at AS createdAt
+       FROM email_connections ORDER BY email, kind`,
     )
     .all<Row>();
   return res.results.map((r) => {
@@ -54,7 +50,7 @@ export async function loadConnections(db: D1Database): Promise<Connection[]> {
   });
 }
 
-/** A saved connection that cannot be loaded (table not migrated yet) must never take a page or a run down. */
+/** A connection that cannot be loaded (table not migrated yet) must never take a page or a run down. */
 export async function safeConnections(db: D1Database): Promise<Connection[]> {
   try {
     return await loadConnections(db);
@@ -63,10 +59,11 @@ export async function safeConnections(db: D1Database): Promise<Connection[]> {
   }
 }
 
+/** The check target for an email's platform account. The email is the identity and the label. */
 export function targetOf(c: Connection): ProviderTarget {
   return {
-    id: c.clientId,
-    client: c.clientName,
+    id: c.email,
+    client: c.email,
     kind: c.kind,
     token: c.tokenName,
     ...(c.account ? { account: c.account } : {}),
@@ -84,51 +81,6 @@ function asArray(json: string | undefined): unknown[] | null {
   }
 }
 
-/**
- * The environment with this site's connections folded in. Safe to call twice (an entry is added once, and never over a
- * registry one). If the registry's own JSON is unreadable it is left alone, so the run still reports that problem.
- */
-export async function withConnections(env: Env): Promise<Env> {
-  const rows = await safeConnections(env.USAGE);
-  if (rows.length === 0) return env;
-  const targets = asArray(env.PROVIDERS_JSON);
-  const clients = asArray(env.CLIENTS_JSON);
-  if (targets === null || clients === null) return env;
-
-  const have = new Set(
-    targets.map((t) => `${(t as ProviderTarget)?.kind}:${(t as ProviderTarget)?.id}`),
-  );
-  const added = rows.filter((c) => !have.has(`${c.kind}:${c.clientId}`));
-  if (added.length === 0) return env;
-
-  const known = new Map(
-    clients.map((c) => [(c as { id?: string })?.id, c as { platforms?: unknown }]),
-  );
-  const fresh = new Map<string, Record<string, unknown>>();
-  for (const c of added) {
-    if (known.has(c.clientId)) continue; // a registry client: only its targets grow
-    const cur = fresh.get(c.clientId);
-    if (cur) (cur.platforms as string[]).push(c.kind);
-    else {
-      fresh.set(c.clientId, {
-        id: c.clientId,
-        name: c.clientName,
-        ...(c.email ? { email: c.email } : {}),
-        status: "live",
-        platforms: [c.kind],
-        accounts: [],
-        monitors: [],
-        domains: [],
-      });
-    }
-  }
-  return {
-    ...env,
-    PROVIDERS_JSON: JSON.stringify([...targets, ...added.map(targetOf)]),
-    CLIENTS_JSON: JSON.stringify([...clients, ...fresh.values()]),
-  };
-}
-
 /** "Prasadam (Bhakta Bandhu)" → "prasadam-bhakta-bandhu". Empty when nothing usable is left. */
 export function slugOf(name: string): string {
   return name
@@ -137,4 +89,70 @@ export function slugOf(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/, "");
+}
+
+/**
+ * The environment with accounts keyed by email and this site's connections folded in. Safe to call twice. If the registry's
+ * own JSON is unreadable it is left alone, so the run still reports that problem.
+ */
+export async function withConnections(env: Env): Promise<Env> {
+  const rows = await safeConnections(env.USAGE);
+  const targets = asArray(env.PROVIDERS_JSON);
+  const clients = asArray(env.CLIENTS_JSON);
+  if (targets === null || clients === null) return env;
+
+  const emailOf = new Map<string, string>();
+  const emails = new Set<string>();
+  for (const c of clients as Array<{ id?: unknown; email?: unknown }>) {
+    if (typeof c?.id === "string" && typeof c.email === "string" && c.email.trim() !== "") {
+      const e = c.email.trim().toLowerCase();
+      emailOf.set(c.id, e);
+      emails.add(e);
+    }
+  }
+
+  const merged: ProviderTarget[] = [];
+  const seen = new Set<string>();
+  const add = (t: ProviderTarget) => {
+    const key = `${t.kind}:${t.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(t);
+  };
+  for (const t of targets as ProviderTarget[]) {
+    const email = emailOf.get(t?.id);
+    add(email ? { ...t, id: email, client: email } : t);
+  }
+  for (const c of rows) add(targetOf(c));
+
+  // An email that only exists as a connection still needs a place in the sidebar.
+  const takenIds = new Set((clients as Array<{ id?: unknown }>).map((c) => c?.id));
+  const placeholders = new Map<string, Record<string, unknown>>();
+  for (const c of rows) {
+    if (emails.has(c.email)) continue;
+    const cur = placeholders.get(c.email);
+    if (cur) {
+      if (!(cur.platforms as string[]).includes(c.kind)) (cur.platforms as string[]).push(c.kind);
+      continue;
+    }
+    let id = `account-${slugOf(c.email) || "email"}`;
+    for (let n = 2; takenIds.has(id); n++) id = `account-${slugOf(c.email) || "email"}-${n}`;
+    takenIds.add(id);
+    placeholders.set(c.email, {
+      id,
+      name: c.email,
+      email: c.email,
+      status: "live",
+      platforms: [c.kind],
+      accounts: [],
+      monitors: [],
+      domains: [],
+      synthetic: true,
+    });
+  }
+  return {
+    ...env,
+    PROVIDERS_JSON: JSON.stringify(merged),
+    CLIENTS_JSON: JSON.stringify([...clients, ...placeholders.values()]),
+  };
 }

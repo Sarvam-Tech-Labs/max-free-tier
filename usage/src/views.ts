@@ -251,11 +251,13 @@ interface Account {
   clients: ClientInfo[];
 }
 
-/** Clients grouped under their owner's email (alphabetical); clients without one share a last group. */
+/** Clients grouped under their owner's email (alphabetical, case-insensitive); clients without one share a last group. */
 export function accountsOf(ledger: Ledger): Account[] {
   const byEmail = new Map<string, ClientInfo[]>();
-  for (const c of ledger.data.clients)
-    byEmail.set(c.email ?? "", [...(byEmail.get(c.email ?? "") ?? []), c]);
+  for (const c of ledger.data.clients) {
+    const email = (c.email ?? "").trim().toLowerCase();
+    byEmail.set(email, [...(byEmail.get(email) ?? []), c]);
+  }
   return [...byEmail.entries()]
     .sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)))
     .map(([email, clients]) => ({ email, clients }));
@@ -296,7 +298,10 @@ function domainsOf(a: Account, h: Health): Array<{ row: DomainRow; days: number 
 
 function cardsOf(a: Account, ledger: Ledger): LedgerProvider[] {
   const ids = new Set(a.clients.map((c) => c.id));
-  return ledger.data.providers.filter((p) => p.clientId !== undefined && ids.has(p.clientId));
+  return ledger.data.providers.filter(
+    (p) =>
+      (p.clientId !== undefined && ids.has(p.clientId)) || (a.email !== "" && p.email === a.email),
+  );
 }
 
 /** What needs a look for this owner: platform alerts, sites down, domains expiring, usage at 80% or more. */
@@ -380,9 +385,10 @@ function platformSection(
   cards: readonly LedgerProvider[],
   d: PageData,
   waiting: readonly string[],
+  usedBy: readonly string[] = [],
 ): string {
   const connected = cards.length > 0;
-  const head = `<div class="section-head"><h2>${esc(cat.name)}</h2>${badge(`${cat.plan} plan`, "mute")}<span class="grow"></span>${connected ? badge("Connected", "ok") : badge("Not connected", "warn")}</div>`;
+  const head = `<div class="section-head"><h2>${esc(cat.name)}</h2>${badge(`${cat.plan} plan`, "mute")}<span class="grow"></span>${connected ? badge("Connected", "ok") : badge("Not connected", "warn")}</div>${usedBy.length > 0 ? `<div class="muted small" style="margin:-4px 0 12px">Used by ${usedBy.map(esc).join(", ")}</div>` : ""}`;
   const alerts = cards
     .filter((p) => p.status)
     .map(
@@ -529,7 +535,10 @@ export function renderConsumptionPage(d: PageData, email?: string): string {
   )
     .map((p) => {
       const cat = CATALOG.find((c) => c.id === p) as PlatformCatalog;
-      const ids = new Set(selected.clients.map((c) => c.id));
+      const ids = new Set([...selected.clients.map((c) => c.id), selected.email]);
+      const usedBy = selected.clients
+        .filter((c) => !c.synthetic && c.platforms.some((x) => platformOf(x) === p))
+        .map((c) => c.name);
       const waiting = [
         ...new Set(
           d.ledger.data.targets
@@ -542,6 +551,7 @@ export function renderConsumptionPage(d: PageData, email?: string): string {
         cards.filter((c) => c.platform === p),
         d,
         waiting,
+        usedBy,
       );
     })
     .join("");
@@ -553,6 +563,7 @@ export function renderConsumptionPage(d: PageData, email?: string): string {
 
   const title = selected.email === "" ? "No email on file" : selected.email;
   const projects = selected.clients
+    .filter((c) => !c.synthetic)
     .map((c) => `${badge(c.name)}${c.status === "live" ? "" : badge(c.status, "warn")}`)
     .join("");
   const who = `<section class="card who"><div class="card-head" style="margin:0"><button type="button" class="btn icon-only" data-sidebar-toggle aria-controls="accounts" aria-expanded="true" aria-label="Show or hide the account list" title="Accounts">${icon("panel", 16)}</button><div class="grow"><div class="muted small">Account</div><h1>${esc(title)}</h1></div></div><div class="chips pad">${projects}</div>${selected.email === "" ? `<p class="muted small" style="margin:12px 0 0">These clients have no email in the registry. Add <code>email:</code> to group them under their owner.</p>` : ""}</section>`;
@@ -606,11 +617,18 @@ function stateOf(name: string, o: TokensOverview): TokenState {
 }
 
 function usedFor(r: RequiredToken, ledger: Ledger): string {
-  const names = new Map(ledger.data.clients.map((c) => [c.id, c.name]));
   return r.targets
     .map((t) => {
       const what = t.account ?? t.projects?.join(", ") ?? "";
-      return `<div>${esc(names.get(t.id) ?? t.client)}${what ? ` <span class="muted small">· ${esc(what)}</span>` : ""}</div>`;
+      const projects = ledger.data.clients
+        .filter(
+          (c) =>
+            !c.synthetic &&
+            c.email?.toLowerCase() === t.id &&
+            c.platforms.some((x) => platformOf(x) === r.kind),
+        )
+        .map((c) => c.name);
+      return `<div>${esc(t.client)}${what ? ` <span class="muted small">· ${esc(what)}</span>` : ""}</div>${projects.length > 0 ? `<div class="muted small">Used by ${projects.map(esc).join(", ")}</div>` : ""}`;
     })
     .join("");
 }
@@ -643,7 +661,13 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
   const disabled = off ? ' disabled title="Set the TOKEN_ENCRYPTION_KEY secret first"' : "";
   const required = new Set(o.required.map((r) => r.name));
 
-  const rows = o.required
+  // Grouped by the email that owns the account, then by platform.
+  const byOwner = [...o.required].sort(
+    (a, b) =>
+      (a.targets[0]?.client ?? "").localeCompare(b.targets[0]?.client ?? "") ||
+      a.kind.localeCompare(b.kind),
+  );
+  const rows = byOwner
     .map((r) => {
       const m = o.managed.find((x) => x.name === r.name);
       const fromSecret = !m && o.secretNames.includes(r.name);
@@ -670,7 +694,7 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
               btn(`data-token-test="${esc(r.name)}"`, "refresh", "Test"),
               remove,
             ].join("");
-      return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${conn ? ` ${badge("On the site", "mute")}` : ""}${added ? `<div class="muted small">${added}</div>` : ""}</td><td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td><td data-label="Used for">${usedFor(r, d.ledger)}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
+      return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${conn ? ` ${badge("On the site", "mute")}` : ""}${added ? `<div class="muted small">${added}</div>` : ""}</td><td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td><td data-label="Account">${usedFor(r, d.ledger)}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
     })
     .join("");
 
@@ -689,12 +713,11 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
     })
     .join("");
 
-  const clientOptions = [...d.ledger.data.clients]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(
-      (c) =>
-        `<option value="${esc(c.id)}">${esc(c.name)}${c.email ? ` · ${esc(c.email)}` : ""}</option>`,
-    )
+  const emailOptions = [
+    ...new Set(d.ledger.data.clients.flatMap((c) => (c.email ? [c.email.toLowerCase()] : []))),
+  ]
+    .sort()
+    .map((e) => `<option value="${esc(e)}"></option>`)
     .join("");
   const kindHelps = KINDS.map(
     (k) =>
@@ -702,12 +725,11 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
   ).join("");
   const connectDialog = `<dialog id="connect-dialog" aria-labelledby="connect-title"><form method="dialog" autocomplete="off">
 <h2 id="connect-title">Connect a platform</h2>
-<p class="muted" style="margin:0">Paste a token and say who it is for. The site finds the account from the token, so there is nothing else to type.</p>
+<p class="muted" style="margin:0">Paste a token and say which email its account belongs to. The site finds the account from the token, so there is nothing else to type.</p>
 <div class="field"><label for="c-kind">Platform</label><select id="c-kind" name="kind">${KINDS.map((k) => `<option value="${k}">${esc(KIND_LABEL[k])}</option>`).join("")}</select></div>
 <div class="help" data-kind-box></div>
 <div class="field"><label for="c-value">Token</label><input id="c-value" name="value" type="password" autocomplete="new-password" spellcheck="false" data-1p-ignore data-lpignore="true" required minlength="8" placeholder="Paste the token here"><span class="hint">It is checked against the platform, encrypted, and never shown again.</span></div>
-<div class="field"><label for="c-client">Which client is this for?</label><select id="c-client" name="client">${clientOptions}<option value="__new__">A new client…</option></select></div>
-<div data-new hidden class="stack" style="gap:16px"><div class="field"><label for="c-name">Client name</label><input id="c-name" name="newName" type="text" maxlength="80" placeholder="e.g. Acme Traders"></div><div class="field"><label for="c-email">Email its accounts use</label><input id="c-email" name="newEmail" type="email" maxlength="254" placeholder="the email these platform accounts are registered with"><span class="hint">Groups this client's platforms under that email on the Consumption tab.</span></div></div>
+<div class="field"><label for="c-email">Email</label><input id="c-email" name="email" type="email" list="c-emails" required maxlength="254" autocomplete="off" placeholder="the email this platform account is registered with"><datalist id="c-emails">${emailOptions}</datalist><span class="hint">Everything for one email is grouped together on the Consumption tab, with one connection per platform. Pick one you already use, or type a new one.</span></div>
 <div class="field" data-github hidden><label for="c-org">GitHub organization (optional)</label><input id="c-org" name="org" type="text" maxlength="39" placeholder="only if billing is on an organization"></div>
 <div class="field" data-team hidden><label for="c-team">Vercel team</label><select id="c-team" name="team"></select></div>
 <div class="field"><label for="c-expires">Expires on (optional)</label><input id="c-expires" name="expires" type="date"><span class="hint">The date you chose when creating it, so you are warned in time. GitHub's is read automatically.</span></div>
@@ -725,11 +747,11 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
 <div class="dialog-actions"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" data-save>Verify and save</button></div>
 </form></dialog>${connectDialog}<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>`;
 
-  const body = `<div class="page-head"><h1>Tokens</h1><p class="lead">Connect a platform here: paste its token, say which client it is for, and the site does the rest. Tokens are verified, encrypted and never shown again.</p><div class="actions" style="margin-top:16px"><button type="button" class="btn primary" data-connect-open${disabled}>${icon("key", 16)}Connect a platform</button></div></div>
+  const body = `<div class="page-head"><h1>Tokens</h1><p class="lead">Connect a platform here: paste its token and say which email it belongs to, and the site does the rest. Tokens are verified, encrypted and never shown again.</p><div class="actions" style="margin-top:16px"><button type="button" class="btn primary" data-connect-open${disabled}>${icon("key", 16)}Connect a platform</button></div></div>
 <div class="stack">
 ${off ? `<div class="note bad">${icon("alert", 18)}<div><b>Token storage is not enabled.</b> Set the <code>TOKEN_ENCRYPTION_KEY</code> secret and redeploy to add tokens here. Tokens set in the deployment secret keep working.</div></div>` : ""}
 <section class="card" aria-label="Connected platforms"><div class="card-head"><h2>Connected platforms</h2></div>
-${rows === "" ? `<div class="empty">Nothing is connected yet. Use <b>Connect a platform</b> above.</div>` : `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Platform</th><th>Used for</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`}
+${rows === "" ? `<div class="empty">Nothing is connected yet. Use <b>Connect a platform</b> above.</div>` : `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Platform</th><th>Account</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`}
 </section>
 ${others.length > 0 ? `<section class="card" aria-label="Other saved tokens"><div class="card-head"><h2>Other saved tokens</h2></div><div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Note</th><th>Actions</th></tr></thead><tbody>${otherRows}</tbody></table></div></section>` : ""}
 <section class="card" aria-label="How tokens are kept"><div class="card-head"><span class="tile">${icon("shield", 22)}</span><h2>How tokens are kept</h2></div>

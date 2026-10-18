@@ -60,9 +60,10 @@ One password-protected website, two tabs, in the Sarvam Tech Labs design system:
   Resend, GitHub, Supabase), how much of each limit is consumed, the exact date and time it resets (IST, UTC on hover) and
   how often it resets, plus whether their sites are up and when their domains expire.
 
-- **Tokens** — **Connect a platform** yourself, right on the site: paste a token, pick the client (or add a new one with
-  its email), and the account is found from the token. No registry edit, no redeploy. Tokens are verified, encrypted and
-  never shown again, with a warning before one fails or expires.
+- **Tokens** — **Connect a platform** yourself, right on the site: paste a token and say which email it belongs to; the
+  account is found from the token. An email has one account per platform and its projects run on them, matching how the
+  platforms actually meter usage. No registry edit, no redeploy. Tokens are verified, encrypted and never shown again, with
+  a warning before one fails or expires.
 
 Telegram only pushes alerts to your phone; the site is where you look.
 

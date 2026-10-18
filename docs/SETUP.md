@@ -96,21 +96,27 @@ secret in both repos and the repository variable `INGEST_URL`
 `/classic` keeps the original 7-day table with spike detection.
 
 ### Connect a platform (GitHub, Resend, Supabase, Vercel) — no registry edit, no redeploy
-Open the site's **Tokens** page and click **Connect a platform**. Pick the platform, paste its token, and choose which
-client it is for: an existing one, or **A new client…** with its name and the email its accounts use (that email is what
-groups it in the Consumption tab's sidebar). The site finds the rest from the token itself: GitHub's login, the Vercel
-team (it asks which if the token sees several), the Supabase projects. It then verifies the token against the platform,
-encrypts it (AES-256-GCM, key = the `TOKEN_ENCRYPTION_KEY` secret) and shows the platform as connected straight away.
-Nothing is saved if the check fails. For GitHub billing on an organization, type the organization's name in the optional field.
+The model: **an email owns one account per platform; its projects run on those accounts.** Usage is per platform account
+(one GitHub account has one Actions-minutes pool however many repos use it), so a token belongs to an email and a platform,
+never to a project. A project (a registry client) belongs to an email and lists the platforms it uses.
 
-A connected row has **Replace**, **Test** and **Disconnect**; Disconnect removes the connection, its token and its
-readings. Each client can have one connection per platform. Connections live in the site's database next to the registry's
-own; if the registry later gains a `usage:` block for the same client and platform, the registry's wins.
+Open the site's **Tokens** page and click **Connect a platform**. Pick the platform, paste its token, and type the email its
+account is registered with (emails you already use are suggested; a new one simply appears in the Consumption sidebar). The
+site finds the rest from the token itself: GitHub's login, the Vercel team (it asks which if the token sees several), the
+Supabase projects. It then verifies the token against the platform, encrypts it (AES-256-GCM, key = the
+`TOKEN_ENCRYPTION_KEY` secret) and shows the platform as connected straight away. Nothing is saved if the check fails. For
+GitHub billing on an organization, type the organization's name in the optional field.
+
+On the Consumption tab an email shows one card per platform with its meters, and under it "Used by" the projects that run on
+it. A connected row has **Replace**, **Test** and **Disconnect**; Disconnect removes the connection, its token and its
+readings. There is one connection per email and platform. Connections live in the site's database next to the registry's own.
 
 ### Or name the token in the registry
-A client's `usage:` block (see `clients.example.yaml`) names a token, e.g. `token: GH_ACME`. The **Tokens** page then lists
-that name as **Missing**; click **Add token** and paste it. The token is never shown again: the page keeps only the last
-four characters. **Replace**, **Test** and **Delete** work on it. Use this when the registry should own the client.
+A client's `usage:` block (see `clients.example.yaml`) names a token, e.g. `token: GH_ACME`. Registry accounts are keyed by the
+client's `email:`, so several clients under one email that name the same platform share one account (the first wins; the
+others' token names are not needed). A client with no `email:` keeps its own account. The **Tokens** page lists the name as
+**Missing**; click **Add token** and paste it. The token is never shown again: the page keeps only the last four characters.
+**Replace**, **Test** and **Delete** work on it. If the registry covers an email and platform, a site connection for it is refused.
 
 Telegram warns you when a saved token fails two checks in a row (then at most once a day) or expires within 14 days.
 GitHub's expiry is read automatically; for the others enter the date you chose when creating the token.

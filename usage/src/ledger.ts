@@ -46,6 +46,8 @@ export interface ClientInfo {
   /** FlareWatch monitors (ids as FlareWatch knows them) and registered domains; live clients only. */
   monitors: Array<{ id: string; name: string; url: string }>;
   domains: string[];
+  /** A placeholder for an email that only has site connections (no registry project); hidden from project lists. */
+  synthetic?: boolean;
 }
 
 export interface LedgerProvider {
@@ -53,6 +55,8 @@ export interface LedgerProvider {
   /** Which platform this card measures, and which client it belongs to (absent for an account not in the registry). */
   platform: Platform;
   clientId?: string;
+  /** The email that owns this platform account (set for platform accounts keyed by email). */
+  email?: string;
   name: string;
   account: string;
   plan: string;
@@ -260,7 +264,8 @@ function targetProvider(
   return {
     id: `${t.kind}-${t.id}`,
     platform: t.kind,
-    clientId: t.id,
+    // A platform account is identified by its owner's email; a registry client with no email keeps its own id.
+    ...(t.id.includes("@") ? { email: t.id } : { clientId: t.id }),
     name: `${t.client} · ${KIND_LABEL[t.kind]}`,
     account: t.account ?? t.projects?.join(", ") ?? "team",
     plan: "Free",
