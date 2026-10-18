@@ -59,7 +59,7 @@ describe("buildLedger · Cloudflare", () => {
     expect(data.project).toBe("max-free-tier");
     const [cf] = data.providers;
     expect(cf?.name).toBe("Acme · Cloudflare");
-    expect(cf?.metrics).toHaveLength(11);
+    expect(cf?.metrics).toHaveLength(12);
     const m = (k: string) => cf?.metrics.find((x) => x.key === k);
     expect(m("workers.requests")).toMatchObject({
       used: 4000,
@@ -106,7 +106,7 @@ describe("buildLedger · Cloudflare", () => {
       NOW,
     );
     expect(broken.data.providers).toHaveLength(1);
-    expect(broken.data.providers[0]?.metrics).toHaveLength(11); // fell back to the free-plan table
+    expect(broken.data.providers[0]?.metrics).toHaveLength(12); // fell back to the free-plan table
     expect(broken.data.providers[0]?.name).toBe("Cloudflare");
   });
 

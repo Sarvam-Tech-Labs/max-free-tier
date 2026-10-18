@@ -56,6 +56,10 @@ const PLATFORM_ORDER: readonly Platform[] = [
   "resend",
   "github",
   "supabase",
+  "umami",
+  "gemini",
+  "groq",
+  "cerebras",
 ];
 
 // ───────────────────────────── shared pieces ─────────────────────────────
@@ -350,6 +354,8 @@ const HOBBY_NOTE =
 
 /** Why a platform shows no numbers, as HTML. `waiting` = tokens the registry asks for that have not been added yet. */
 function notConnectedNote(p: Platform, waiting: readonly string[]): string {
+  const unmeasured = CATALOG.find((c) => c.id === p)?.unmeasured;
+  if (unmeasured) return esc(unmeasured);
   if (p === "cloudflare") {
     return "No Cloudflare account is linked to these projects. Add the account id to the registry to read usage live.";
   }
@@ -400,7 +406,7 @@ function platformSection(
   usedBy: readonly string[] = [],
 ): string {
   const connected = cards.length > 0;
-  const head = `<div class="section-head"><h2>${esc(cat.name)}</h2>${badge(`${cat.plan} plan`, "mute")}<span class="grow"></span>${connected ? badge("Connected", "ok") : badge("Not connected", "warn")}</div>${usedBy.length > 0 ? `<div class="muted small" style="margin:-4px 0 12px">Used by ${usedBy.map(esc).join(", ")}</div>` : ""}`;
+  const head = `<div class="section-head"><h2>${esc(cat.name)}</h2>${badge(`${cat.plan} plan`, "mute")}<span class="grow"></span>${connected ? badge("Connected", "ok") : cat.unmeasured ? badge("Not measurable", "mute") : badge("Not connected", "warn")}</div>${usedBy.length > 0 ? `<div class="muted small" style="margin:-4px 0 12px">Used by ${usedBy.map(esc).join(", ")}</div>` : ""}`;
   const alerts = cards
     .filter((p) => p.status)
     .map(

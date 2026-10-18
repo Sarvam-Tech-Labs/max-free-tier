@@ -32,7 +32,7 @@ export interface Meter {
   note?: string;
 }
 
-export type Platform = ProviderKind | "cloudflare";
+export type Platform = ProviderKind | "cloudflare" | "umami" | "gemini" | "groq" | "cerebras";
 
 /** One client of the registry (CLIENTS_JSON). `email` groups clients under one owner in the Consumption tab. */
 export interface ClientInfo {
@@ -90,6 +90,10 @@ const CF_LABELS: Readonly<Record<string, string>> = {
   "queues.operations": "Queue operations",
   "r2.class_a": "R2 Class A operations",
   "r2.class_b": "R2 Class B operations",
+  "ai.neurons": "Workers AI neurons",
+  "d1.storage_bytes": "D1 storage (all databases)",
+  "d1.db_max_bytes": "D1 largest database",
+  "r2.storage_bytes": "R2 storage (Standard)",
 };
 
 const RESEND_LABELS: Readonly<Record<string, string>> = {
@@ -167,10 +171,31 @@ export function parseClients(json: string | undefined): ClientInfo[] {
   }
 }
 
+/** The D1 / R2 storage levels read for one account (extras.ts): sizes, so they never reset. */
+function storageMeters(rows: readonly ReadingRow[], now: Date): Meter[] {
+  return rows
+    .filter((r) => r.note === null)
+    .map((r): Meter => {
+      const stale = now.getTime() - Date.parse(r.checkedAt) > STALE_AFTER_MS;
+      return {
+        key: r.metric,
+        label: labelFor(r.metric),
+        used: r.used,
+        limit: r.limit,
+        unit: "bytes",
+        resets: false,
+        confidence: "exact",
+        ...(stale ? { note: `Last successful check ${r.checkedAt}; the latest check failed` } : {}),
+      };
+    });
+}
+
 async function cloudflareProviders(
   env: Env,
   today: string,
   clients: readonly ClientInfo[],
+  readings: readonly ReadingRow[],
+  now: Date,
 ): Promise<LedgerProvider[]> {
   const accounts = parseAccounts(env.CF_ACCOUNT_ID);
   const labels = safeLabels(env.ACCOUNT_LABELS_JSON);
@@ -216,7 +241,13 @@ async function cloudflareProviders(
       account: id,
       plan: "Workers Free",
       auth: "read-only token, Account Analytics: Read",
-      metrics,
+      metrics: [
+        ...metrics,
+        ...storageMeters(
+          readings.filter((r) => r.target === `cloudflare:${accountKey(accounts, id)}`),
+          now,
+        ),
+      ],
     });
   }
   return providers;
@@ -280,8 +311,8 @@ export async function buildLedger(rawEnv: Env, now: Date = new Date()): Promise<
   const env = await withConnections(rawEnv);
   const today = isoDate(now);
   const clients = parseClients(env.CLIENTS_JSON);
-  const cf = await cloudflareProviders(env, today, clients);
   const readings = await loadReadings(env.USAGE);
+  const cf = await cloudflareProviders(env, today, clients, readings, now);
   const statuses = new Map((await loadTargetStatus(env.USAGE)).map((s) => [s.target, s]));
   const targets = safeTargets(env.PROVIDERS_JSON);
   const others = targets

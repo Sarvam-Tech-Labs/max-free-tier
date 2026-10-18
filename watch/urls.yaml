@@ -73,3 +73,29 @@ url: "https://docs.github.com/en/billing/concepts/product-billing/github-actions
 filter:
   - css: main
   - html2text
+---
+name: "Umami Cloud · pricing (Hobby plan)"
+url: "https://umami.is/pricing"
+filter:
+  - css: main
+  - html2text
+---
+name: "Umami Cloud · plans and features (docs source)"
+url: "https://raw.githubusercontent.com/umami-software/docs/master/content/docs/cloud/index.mdx"
+---
+name: "Gemini API · rate limits"
+url: "https://ai.google.dev/gemini-api/docs/rate-limits"
+filter:
+  - css: main
+  - html2text
+---
+name: "Groq · rate limits"
+url: "https://console.groq.com/docs/rate-limits"
+filter:
+  - html2text
+---
+name: "Cerebras · rate limits"
+url: "https://inference-docs.cerebras.ai/support/rate-limits"
+filter:
+  - css: main
+  - html2text

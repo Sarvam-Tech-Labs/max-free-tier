@@ -24,6 +24,7 @@ export const SOURCES = {
   "kv.delete": { file: "partials/workers/kv_pricing.mdx", row: /^\|\s*Keys deleted\s*\|/ },
   "kv.list": { file: "partials/workers/kv_pricing.mdx", row: /^\|\s*List requests\s*\|/ },
   "queues.operations": { file: "partials/workers/queues_pricing.mdx", row: /^\|\s*Standard operations\s*\|/ },
+  "ai.neurons": { file: "docs/workers-ai/platform/pricing.mdx", row: /^\|\s*Workers Free\s*\|/ },
   "r2.class_a": { file: "docs/r2/pricing.mdx", after: "### Free tier", row: /^\|\s*Class A Operations\s*\|/ },
   "r2.class_b": { file: "docs/r2/pricing.mdx", after: "### Free tier", row: /^\|\s*Class B Operations\s*\|/ },
 };

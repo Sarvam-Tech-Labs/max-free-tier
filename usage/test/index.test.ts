@@ -72,10 +72,17 @@ describe("runCollect", () => {
     const e = env();
     const { f, calls } = stubUpstream();
     const s = await runCollect(e, NOW, f);
-    expect(calls.map((c) => (c.body as { variables: { date: string } }).variables.date)).toEqual([
+    // The usage query, once for yesterday and once for today (the Workers AI and storage queries are separate requests).
+    const usage = calls.filter((c) =>
+      String((c.body as { query: string }).query).includes("workersInvocationsAdaptive"),
+    );
+    expect(usage.map((c) => (c.body as { variables: { date: string } }).variables.date)).toEqual([
       "2026-09-13",
       "2026-09-14",
     ]);
+    const queries = calls.map((c) => String((c.body as { query: string }).query));
+    expect(queries.filter((q) => q.includes("aiInferenceAdaptiveGroups"))).toHaveLength(2);
+    expect(queries.filter((q) => q.includes("d1StorageAdaptiveGroups"))).toHaveLength(1);
     expect(s).toEqual({ date: "2026-09-14", written: 18 * 2, spikes: 0, notified: 0 });
     const n = rawDb(e.USAGE).prepare("SELECT COUNT(*) AS n FROM usage_daily").get() as {
       n: number;

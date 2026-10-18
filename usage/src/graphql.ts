@@ -74,33 +74,46 @@ interface GraphqlResponse {
 
 export interface UsageRow {
   date: string;
-  product: "workers" | "d1" | "do" | "kv" | "r2" | "queues";
+  product: "workers" | "d1" | "do" | "kv" | "r2" | "queues" | "ai";
   metric: string;
   dim: string;
   value: number;
 }
 
 /**
- * POST the usage query for one UTC day. Throws on non-2xx or GraphQL errors so the caller can log
- * a failed run instead of silently writing nothing. Returns `null` when the account is not in the response.
+ * POST a query for one account. Throws on non-2xx or GraphQL errors so the caller can log a failed run instead of silently
+ * writing nothing. Returns `null` when the account is not in the response.
  */
+export async function postGraphql<T>(
+  token: string,
+  query: string,
+  variables: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<T | null> {
+  const res = await fetchImpl(GRAPHQL_ENDPOINT, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new Error(`graphql: ${res.status}`);
+  const body = (await res.json()) as { data?: { viewer?: { accounts?: T[] } } | null } & Pick<
+    GraphqlResponse,
+    "errors"
+  >;
+  if (body.errors && body.errors.length > 0) {
+    throw new Error(`graphql: ${body.errors.map((e) => e.message).join("; ")}`);
+  }
+  return body.data?.viewer?.accounts?.[0] ?? null;
+}
+
+/** The usage query for one UTC day. */
 export async function fetchUsage(
   token: string,
   account: string,
   date: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<UsageAccount | null> {
-  const res = await fetchImpl(GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: USAGE_QUERY, variables: { account, date } }),
-  });
-  if (!res.ok) throw new Error(`graphql: ${res.status}`);
-  const body = (await res.json()) as GraphqlResponse;
-  if (body.errors && body.errors.length > 0) {
-    throw new Error(`graphql: ${body.errors.map((e) => e.message).join("; ")}`);
-  }
-  return body.data?.viewer?.accounts?.[0] ?? null;
+  return postGraphql<UsageAccount>(token, USAGE_QUERY, { account, date }, fetchImpl);
 }
 
 /** R2 operation classes, copied from https://developers.cloudflare.com/r2/pricing/ (2026-09-15). */

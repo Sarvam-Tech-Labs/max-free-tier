@@ -8,6 +8,7 @@
  */
 import { withConnections } from "./connections";
 import type { Env } from "./env";
+import { fetchAiRows, fetchStorage, storageStatuses } from "./extras";
 import { fetchUsage, toRows } from "./graphql";
 import { domainsOf, refreshDomains } from "./health";
 import { type LimitStatus, limitStatus, parseLevels, parseLimits } from "./limits";
@@ -116,6 +117,54 @@ export interface RunSummary {
   error?: string;
 }
 
+/**
+ * What the main usage query does not carry (extras.ts): Workers AI Neurons join the daily usage rows, and the D1 / R2 storage
+ * levels are kept as readings for the site. Each is its own request; a failure is reported and never stops the rest.
+ */
+async function collectExtras(
+  env: Env,
+  token: string,
+  id: string,
+  key: string,
+  today: string,
+  at: string,
+  fetchImpl: typeof fetch,
+): Promise<{ errors: string[]; written: number; limits: LimitStatus[] }> {
+  const errors: string[] = [];
+  let written = 0;
+  let limits: LimitStatus[] = [];
+  try {
+    for (const date of [addDays(today, -1), today]) {
+      written += await upsertRows(
+        env.USAGE,
+        await fetchAiRows(token, id, date, fetchImpl),
+        at,
+        key,
+      );
+    }
+  } catch (e) {
+    errors.push(`Workers AI usage: ${message(e)}`);
+  }
+  try {
+    let levels: number[] = [];
+    try {
+      if (env.LIMIT_LEVELS?.trim()) levels = parseLevels(env.LIMIT_LEVELS);
+    } catch {
+      // an invalid LIMIT_LEVELS is already reported by the limit check; the readings are still worth saving
+    }
+    const statuses = storageStatuses(
+      await fetchStorage(token, id, today, fetchImpl),
+      today,
+      levels,
+    );
+    await saveReadings(env.USAGE, `cloudflare:${key}`, statuses, at);
+    limits = statuses.filter((s) => s.level !== null); // only a crossed level goes to the alert flow
+  } catch (e) {
+    errors.push(`D1 / R2 storage: ${message(e)}`);
+  }
+  return { errors, written, limits };
+}
+
 /** One collect cycle. `now` and `fetchImpl` are injected for tests. */
 export async function runCollect(
   env: Env,
@@ -163,13 +212,24 @@ export async function runCollect(
         const account = await fetchUsage(env.CF_API_TOKEN, id, date, fetchImpl);
         summary.written += await upsertRows(env.USAGE, toRows(date, account), collectedAt, key);
       }
+      const extra = await collectExtras(
+        env,
+        env.CF_API_TOKEN,
+        id,
+        key,
+        today,
+        collectedAt,
+        fetchImpl,
+      );
+      summary.written += extra.written;
+      errors.push(...extra.errors.map((m) => (label ? `${label}: ${m}` : m)));
 
       const totals = await loadTotals(env.USAGE, addDays(today, -HISTORY_DAYS), today, key);
       const series = buildSeries(totals, today);
       const spikes = spike(series.today, series.last7, parseThresholds(env.THRESHOLDS_JSON));
       summary.spikes += spikes.length;
 
-      const limits = await checkLimits(env, key, today);
+      const limits = [...(await checkLimits(env, key, today)), ...extra.limits];
       const crossed = limits.filter((l) => l.level !== null).length;
       if (crossed > 0) summary.limitAlerts = (summary.limitAlerts ?? 0) + crossed;
 

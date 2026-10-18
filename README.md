@@ -9,7 +9,7 @@ site you run, from one config file, and posts to one Telegram chat. It runs enti
 | What goes wrong | What max-free-tier does | Built on |
 |---|---|---|
 | A site is down, slow, returns the wrong page, or its SSL / domain is about to expire | 1-minute HTTP checks with keyword assertions, domain-registration checks; shown on the site's Consumption tab per owner, with Telegram alerts | [FlareWatch](https://github.com/saminnet/flarewatch) (MIT), on Cloudflare Workers |
-| A Cloudflare free-tier limit is running out (Workers requests, D1 rows, KV, R2, Queues, Durable Objects) | Hourly usage across **all** your clients' Cloudflare accounts with one read-only token; alerts at 50 / 80 / 95 % of each free limit, plus spike detection | [usage-guard-collector](https://github.com/HowardZlh/usage-guard-collector) (MIT) + our multi-account, %-of-limit and Telegram additions (going upstream) |
+| A Cloudflare free-tier limit is running out (Workers requests, Workers AI Neurons, D1 rows and storage, KV, R2 operations and storage, Queues, Durable Objects) | Hourly usage across **all** your clients' Cloudflare accounts with one read-only token; alerts at 50 / 80 / 95 % of each free limit, plus spike detection | [usage-guard-collector](https://github.com/HowardZlh/usage-guard-collector) (MIT) + our multi-account, %-of-limit and Telegram additions (going upstream) |
 | GitHub Actions minutes, Resend email quotas or Supabase database / storage running out; a Supabase project paused; Vercel blocking an account | Hourly read-only API checks per client, same 50 / 80 / 95 % alerts; paused / blocked alerts daily until fixed | Endpoints and token scopes from [free-tier-maxxer](https://github.com/alemalvarez/free-tier-maxxer)'s live-verified research (MIT) |
 | The free tier itself changes — a limit added, changed or removed | Daily diff of Cloudflare's pricing & limits pages **at their Markdown source** (exact line changes), plus Vercel, Supabase, Resend, Firebase and GitHub Actions pricing | [urlwatch](https://github.com/thp/urlwatch) (BSD), on GitHub Actions |
 
@@ -72,6 +72,12 @@ Telegram only pushes alerts to your phone; the site is where you look.
 Not covered, because Vercel Hobby and Supabase Free show them only in their logged-in dashboards (no API token can
 read them): Vercel bandwidth / requests / invocations, Supabase egress / realtime / edge invocations. Their own
 warning emails remain the signal there.
+
+Also listed, but not measurable (their free plans have no usage API): **Umami Cloud** (its API starts at the paid Pro
+plan; the 100,000 events a month are only on its Settings → Usage page), and the free tiers of the **Gemini**, **Groq**
+and **Cerebras** AI APIs. They appear in the Free-tier limits tab with their allowances and sources, and on a project's
+Consumption tab when its registry `platforms:` names them (`umami`, `gemini`, `groq`, `cerebras`); the daily terms watch
+tells you when any of their free tiers change.
 
 ## Related projects
 

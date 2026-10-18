@@ -24,7 +24,8 @@ export const LIMITS_AS_OF = "2026-10-18";
  *   KV      https://developers.cloudflare.com/kv/platform/pricing/
  *   R2      https://developers.cloudflare.com/r2/pricing/ (per month)
  *   Queues  https://developers.cloudflare.com/queues/platform/pricing/
- * Storage limits (D1 GB, R2 GB-month, DO GB) are not in the daily analytics query, so they are not here.
+ * Storage is a level, not a daily sum: see FREE_PLAN_STORAGE below and extras.ts.
+ *   Workers AI https://developers.cloudflare.com/workers-ai/platform/pricing/ (Neurons, resets 00:00 UTC)
  */
 export const FREE_PLAN_LIMITS: Readonly<Record<MetricKey, Limit>> = {
   "workers.requests": { limit: 100_000, period: "day" },
@@ -36,8 +37,21 @@ export const FREE_PLAN_LIMITS: Readonly<Record<MetricKey, Limit>> = {
   "kv.delete": { limit: 1_000, period: "day" },
   "kv.list": { limit: 1_000, period: "day" },
   "queues.operations": { limit: 10_000, period: "day" },
+  "ai.neurons": { limit: 10_000, period: "day" },
   "r2.class_a": { limit: 1_000_000, period: "month" },
   "r2.class_b": { limit: 10_000_000, period: "month" },
+};
+
+/**
+ * Free-plan storage caps in bytes, compared with the current size (not a sum over days). Decimal units on purpose: alerts fire
+ * slightly early rather than late.
+ *   D1  5 GB across the account, 500 MB per database  https://developers.cloudflare.com/d1/platform/limits/
+ *   R2  10 GB-month of Standard storage               https://developers.cloudflare.com/r2/pricing/
+ */
+export const FREE_PLAN_STORAGE: Readonly<Record<string, number>> = {
+  "d1.storage_bytes": 5e9,
+  "d1.db_max_bytes": 500e6,
+  "r2.storage_bytes": 10e9,
 };
 
 /**
@@ -136,7 +150,21 @@ export function formatPct(pct: number): string {
   return pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1)}%`;
 }
 
+/** 4_800_000_000 → "4.80 GB". */
+function bytes(n: number): string {
+  return n >= 1e9
+    ? `${(n / 1e9).toFixed(2)} GB`
+    : n >= 1e6
+      ? `${(n / 1e6).toFixed(1)} MB`
+      : `${Math.round(n / 1e3).toLocaleString("en-US")} KB`;
+}
+
 export function formatLimitLine(s: LimitStatus): string {
   if (s.note) return `• ${s.metric}: ${s.note}`;
-  return `• ${s.metric}: ${s.used.toLocaleString("en-US")} of ${s.limit.toLocaleString("en-US")} per ${s.period} (${formatPct(s.pct)}) — past ${s.level}% of the free-plan limit`;
+  // A size (storage) is a level that never resets; a byte count that is a monthly quota (transfer) does.
+  const size = s.metric.endsWith("_bytes") && !s.metric.includes("transfer");
+  const amount = s.metric.endsWith("_bytes")
+    ? `${bytes(s.used)} of ${bytes(s.limit)}`
+    : `${s.used.toLocaleString("en-US")} of ${s.limit.toLocaleString("en-US")}`;
+  return `• ${s.metric}: ${amount}${size ? "" : ` per ${s.period}`} (${formatPct(s.pct)}) — past ${s.level}% of the free-plan limit`;
 }
