@@ -12,6 +12,7 @@
  */
 import { authorized } from "./auth";
 import { handleConnectionApi } from "./connect";
+import { handleDiag } from "./diag";
 import type { Env } from "./env";
 import { loadDomains, readUptime } from "./health";
 import { handleIngest } from "./ingest";
@@ -82,6 +83,7 @@ export default {
         },
       });
     }
+    if (url.pathname === "/api/diag/schema") return handleDiag(request, env); // TEMPORARY
     if (isTokenApi) return handleTokenApi(request, env);
     if (isConnectApi) return handleConnectionApi(request, env);
     switch (url.pathname) {
