@@ -8,8 +8,12 @@ uptime/  FlareWatch — https://github.com/saminnet/flarewatch
 
 usage/   usage-guard-collector — https://github.com/HowardZlh/usage-guard-collector
          Copyright (c) 2026 HowardZlh — MIT License (see usage/LICENSE)
-         Modifications (multi-account support, free-plan limit alerts, Telegram channel)
+         Modifications (multi-account support, free-plan limit alerts, Telegram channel, GitHub /
+         Resend / Supabase / Vercel checks)
          Copyright (c) 2026 Sarvam Tech Labs, under the same MIT License.
+
+Research used (endpoints, token scopes, free-plan gaps; no code copied):
+         free-tier-maxxer — https://github.com/alemalvarez/free-tier-maxxer — MIT License
 
 At run time the free-tier terms watch installs (does not redistribute):
          urlwatch — https://github.com/thp/urlwatch

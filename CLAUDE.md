@@ -19,12 +19,16 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 3. **Free-tier limit?** Usage page or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
    (`usage/src/limits.ts` has the cited numbers).
 4. **Logs:** Cloudflare → Workers & Pages → the Worker → Logs, or `npx wrangler tail` in the project.
-5. **Not on Cloudflare** (Vercel, Supabase, Firebase, Resend, GitHub Actions): that platform's dashboard/CLI.
-   Supabase free projects pause after a week of inactivity.
+5. **Not on Cloudflare** (Vercel, Supabase, Firebase, Resend, GitHub Actions): clients with a registry `usage:` block
+   get hourly alerts (`usage/src/providers.ts`: Actions minutes, Resend quotas, Supabase size + paused, Vercel block);
+   otherwise that platform's dashboard/CLI. Supabase free projects pause after a week of inactivity.
+   A provider alert run logs `{"event":"providers",…}`; an `error` there names the client + platform + HTTP status
+   (401/403 = token or scope wrong, 404 on GitHub = wrong account or not on the enhanced billing platform).
 
 ## "The free tier changed" (Telegram diff from the daily terms watch)
 1. For Cloudflare the diff is the docs' Markdown source — find the commit in `cloudflare/cloudflare-docs` for context.
-2. If a number we rely on changed: update `usage/src/limits.ts` (`FREE_PLAN_LIMITS`, `LIMITS_AS_OF`) and its test.
+2. If a number we rely on changed: update `usage/src/limits.ts` (`FREE_PLAN_LIMITS`, `LIMITS_AS_OF`) or
+   `usage/src/providers.ts` (`PROVIDER_LIMITS`: GitHub minutes, Supabase sizes) and the tests.
 3. A new `<Render file="x" product="y"/>` line on a Cloudflare page = a new partial
    (`src/content/partials/y/x.mdx`): add it to `watch/urls.yaml`.
 

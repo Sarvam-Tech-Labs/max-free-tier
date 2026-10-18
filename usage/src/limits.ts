@@ -81,6 +81,8 @@ export interface LimitStatus {
   pct: number;
   /** Highest configured level reached, or null when below the lowest one. */
   level: number | null;
+  /** A state problem rather than a percentage (e.g. "project is paused"); replaces the numbers in the alert. */
+  note?: string;
 }
 
 /**
@@ -101,19 +103,31 @@ export function limitStatus(
     const { limit, period } = limits[metric] as Limit;
     const used = (period === "day" ? day : month)[metric] ?? 0;
     if (used <= 0) continue;
-    const pct = (used / limit) * 100;
-    const crossed = levels.filter((l) => pct >= l);
-    out.push({
-      metric,
-      used,
-      limit,
-      period,
-      periodKey: period === "day" ? today : today.slice(0, 7),
-      pct,
-      level: crossed.length > 0 ? (crossed[crossed.length - 1] as number) : null,
-    });
+    out.push(toStatus(metric, used, limit, period, today, levels));
   }
   return out;
+}
+
+/** One reading against its limit: percentage, period key and highest level crossed. */
+export function toStatus(
+  metric: MetricKey,
+  used: number,
+  limit: number,
+  period: Period,
+  today: string,
+  levels: readonly number[],
+): LimitStatus {
+  const pct = (used / limit) * 100;
+  const crossed = levels.filter((l) => pct >= l);
+  return {
+    metric,
+    used,
+    limit,
+    period,
+    periodKey: period === "day" ? today : today.slice(0, 7),
+    pct,
+    level: crossed.length > 0 ? (crossed[crossed.length - 1] as number) : null,
+  };
 }
 
 export function formatPct(pct: number): string {
@@ -121,5 +135,6 @@ export function formatPct(pct: number): string {
 }
 
 export function formatLimitLine(s: LimitStatus): string {
+  if (s.note) return `• ${s.metric}: ${s.note}`;
   return `• ${s.metric}: ${s.used.toLocaleString("en-US")} of ${s.limit.toLocaleString("en-US")} per ${s.period} (${formatPct(s.pct)}) — past ${s.level}% of the free-plan limit`;
 }

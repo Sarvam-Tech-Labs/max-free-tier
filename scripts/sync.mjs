@@ -37,8 +37,36 @@ export function load(text) {
       if (mids.has(m.id)) throw new Error(`clients.yaml: ${c.id} has two monitors with id ${m.id}`);
       mids.add(m.id);
     }
+    for (const [kind, u] of Object.entries(c.usage ?? {})) {
+      const where = `clients.yaml: ${c.id} usage.${kind}`;
+      if (!KINDS.includes(kind)) throw new Error(`${where}: unknown platform (${KINDS.join(" | ")})`);
+      if (!/^[A-Z][A-Z0-9_]*$/.test(u?.token ?? "")) throw new Error(`${where}.token must name a key in the PROVIDER_TOKENS secret (A-Z, 0-9, _)`);
+      if ((kind === "github" || kind === "vercel") && !u.account) throw new Error(`${where} needs account`);
+      if (kind === "supabase" && !(Array.isArray(u.projects) && u.projects.length > 0 && u.projects.every((p) => /^[a-z0-9]+$/.test(p)))) {
+        throw new Error(`${where}.projects must be a list of project refs`);
+      }
+    }
   }
   return clients;
+}
+
+// Platforms the usage collector checks besides Cloudflare (usage/src/providers.ts).
+const KINDS = ["github", "resend", "supabase", "vercel"];
+const PROVIDERS_CRON = "30 * * * *"; // = PROVIDERS_CRON in usage/src/run.ts
+
+/** Other-platform targets of live clients, for PROVIDERS_JSON. Token *names* only; the tokens are a secret. */
+export function providers(clients) {
+  return live(clients).flatMap((c) =>
+    Object.entries(c.usage ?? {}).map(([kind, u]) => ({
+      id: c.id,
+      client: c.name,
+      kind,
+      token: u.token,
+      ...(u.account ? { account: String(u.account) } : {}),
+      ...(u.org ? { org: true } : {}),
+      ...(u.projects ? { projects: u.projects } : {}),
+    })),
+  );
 }
 
 export const DEFAULT_ORG = { name: "max-free-tier", timeZone: "UTC" };
@@ -94,6 +122,7 @@ export function usageConfig(clients, upstreamWrangler) {
   const accounts = clients.filter((c) => c.status !== "paused" && c.cloudflare?.account_id);
   const compat = /"compatibility_date"\s*:\s*"([^"]+)"/.exec(upstreamWrangler)?.[1];
   if (!compat) throw new Error("usage/wrangler.jsonc: compatibility_date not found");
+  const targets = providers(clients);
   return {
     $schema: "node_modules/wrangler/config-schema.json",
     name: "max-free-tier-usage",
@@ -101,7 +130,8 @@ export function usageConfig(clients, upstreamWrangler) {
     compatibility_date: compat,
     observability: { enabled: true, head_sampling_rate: 1 },
     // Hourly, so a limit is reported within the hour instead of within six. ~2 GraphQL calls per account per run.
-    triggers: { crons: ["0 * * * *"] },
+    // Other platforms run at :30 in their own invocation (own subrequest budget), only when some client has them.
+    triggers: { crons: targets.length > 0 ? ["0 * * * *", PROVIDERS_CRON] : ["0 * * * *"] },
     d1_databases: [
       {
         binding: "USAGE",
@@ -115,6 +145,7 @@ export function usageConfig(clients, upstreamWrangler) {
       ACCOUNT_LABELS_JSON: JSON.stringify(Object.fromEntries(accounts.map((c) => [c.cloudflare.account_id, c.name]))),
       LIMIT_LEVELS: "50,80,95",
       THRESHOLDS_JSON: "",
+      ...(targets.length > 0 ? { PROVIDERS_JSON: JSON.stringify(targets) } : {}),
     },
   };
 }

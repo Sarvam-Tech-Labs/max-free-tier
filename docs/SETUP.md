@@ -48,6 +48,9 @@ gh secret set TELEGRAM_BOT_TOKEN    --repo $R
 gh secret set TELEGRAM_CHAT_ID      --repo $R
 gh secret set FLAREWATCH_ADMIN_BASIC_AUTH --repo $R   # status page password:
 #   cd uptime && npx -y pnpm@12.11.2 install --ignore-scripts && npx -y pnpm@12.11.2 run auth:secret -- <user> '<password>'
+# Optional — only if the registry has `usage:` blocks (GitHub / Resend / Supabase / Vercel). One JSON object, keys =
+# the `token:` names in the registry. Tokens and scopes are listed in clients.example.yaml.
+gh secret set PROVIDER_TOKENS --repo $R   # e.g. {"GH_ACME":"github_pat_…","RESEND_ACME":"re_…","SUPABASE":"sbp_…"}
 ```
 
 ## 5. Deploy

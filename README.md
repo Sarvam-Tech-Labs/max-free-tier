@@ -10,6 +10,7 @@ site you run, from one config file, and posts to one Telegram chat. It runs enti
 |---|---|---|
 | A site is down, slow, returns the wrong page, or its SSL / domain is about to expire | 1-minute HTTP checks with keyword assertions, domain-registration checks, private status page with one group per client | [FlareWatch](https://github.com/saminnet/flarewatch) (MIT), on Cloudflare Workers |
 | A Cloudflare free-tier limit is running out (Workers requests, D1 rows, KV, R2, Queues, Durable Objects) | Hourly usage across **all** your clients' Cloudflare accounts with one read-only token; alerts at 50 / 80 / 95 % of each free limit, plus spike detection | [usage-guard-collector](https://github.com/HowardZlh/usage-guard-collector) (MIT) + our multi-account, %-of-limit and Telegram additions (going upstream) |
+| GitHub Actions minutes, Resend email quotas or Supabase database / storage running out; a Supabase project paused; Vercel blocking an account | Hourly read-only API checks per client, same 50 / 80 / 95 % alerts; paused / blocked alerts daily until fixed | Endpoints and token scopes from [free-tier-maxxer](https://github.com/alemalvarez/free-tier-maxxer)'s live-verified research (MIT) |
 | The free tier itself changes — a limit added, changed or removed | Daily diff of Cloudflare's pricing & limits pages **at their Markdown source** (exact line changes), plus Vercel, Supabase, Resend, Firebase and GitHub Actions pricing | [urlwatch](https://github.com/thp/urlwatch) (BSD), on GitHub Actions |
 
 ```
@@ -44,6 +45,16 @@ Full walkthrough: [`docs/SETUP.md`](docs/SETUP.md).
 [`watch/urls.yaml`](watch/urls.yaml): Cloudflare Workers pricing & limits, D1, KV, Queues, Workers Logs, Durable Objects,
 R2, Workers AI, Pages — plus Vercel limits, Supabase, Resend, Firebase pricing and GitHub Actions billing. PRs adding
 more providers are very welcome.
+
+Not covered, because Vercel Hobby and Supabase Free show them only in their logged-in dashboards (no API token can
+read them): Vercel bandwidth / requests / invocations, Supabase egress / realtime / edge invocations. Their own
+warning emails remain the signal there.
+
+## Related projects
+
+- [free-tier-maxxer](https://github.com/alemalvarez/free-tier-maxxer) — a local dashboard of one person's own free-tier
+  usage (GitHub, PostHog, Langfuse, Supabase, Vercel, Resend), including browser-session captures for the numbers above.
+  Use it for a single side project; use max-free-tier for many client accounts with unattended alerts.
 
 ## Develop
 

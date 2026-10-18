@@ -71,6 +71,37 @@ test("usage config watches every non-paused Cloudflare account, labelled, hourly
   assert.throws(() => usageConfig(clients, "{}"), /compatibility_date not found/);
 });
 
+test("usage: other platforms of live clients become PROVIDERS_JSON + a :30 cron; token names only", () => {
+  const reg = load(
+    yaml(`  - id: acme
+    name: Acme
+    status: live
+    usage:
+      github: { account: acme-co, org: true, token: GH_ACME }
+      resend: { token: RESEND_ACME }
+      supabase: { projects: [abcdefghij], token: SUPABASE }
+  - id: draft
+    name: Draft
+    status: unconfirmed
+    usage: { vercel: { account: team_x, token: VERCEL_DRAFT } }
+`),
+  );
+  const cfg = usageConfig(reg, '{ "compatibility_date": "2026-09-01" }');
+  assert.deepEqual(cfg.triggers.crons, ["0 * * * *", "30 * * * *"]);
+  assert.deepEqual(JSON.parse(cfg.vars.PROVIDERS_JSON), [
+    { id: "acme", client: "Acme", kind: "github", token: "GH_ACME", account: "acme-co", org: true },
+    { id: "acme", client: "Acme", kind: "resend", token: "RESEND_ACME" },
+    { id: "acme", client: "Acme", kind: "supabase", token: "SUPABASE", projects: ["abcdefghij"] },
+  ]);
+  assert.equal(usageConfig(clients, '{ "compatibility_date": "2026-09-01" }').vars.PROVIDERS_JSON, undefined);
+
+  const bad = (u) => () => load(yaml(`  - { id: a, name: A, status: live, usage: ${u} }`));
+  assert.throws(bad("{ netlify: { token: X } }"), /unknown platform/);
+  assert.throws(bad("{ resend: { token: re_live_123 } }"), /must name a key/);
+  assert.throws(bad("{ github: { token: GH } }"), /needs account/);
+  assert.throws(bad("{ supabase: { token: SB, projects: [] } }"), /project refs/);
+});
+
 test("render produces the three generated files with the do-not-edit header", () => {
   const files = render(load(yaml(`  - { id: a, name: A, status: live, monitors: [{ id: s, name: S, url: "https://a.example" }] }`)));
   assert.deepEqual(Object.keys(files).sort(), [

@@ -4,14 +4,15 @@
  * scheduled(): one collect cycle (see run.ts). fetch(): GET / renders the last 7 days; everything else is 404.
  */
 import type { Env } from "./env";
-import { renderIndex, runCollect } from "./run";
+import { PROVIDERS_CRON, renderIndex, runCollect, runProviders } from "./run";
 
 export default {
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const providers = event?.cron === PROVIDERS_CRON;
     ctx.waitUntil(
-      runCollect(env).then((s) => {
+      (providers ? runProviders(env) : runCollect(env)).then((s) => {
         // Never log the token. The summary has only counts and an error message.
-        console.log(JSON.stringify({ event: "collect", ...s }));
+        console.log(JSON.stringify({ event: providers ? "providers" : "collect", ...s }));
       }),
     );
   },

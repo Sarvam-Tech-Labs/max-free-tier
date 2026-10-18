@@ -11,6 +11,13 @@ import { fetchUsage, toRows } from "./graphql";
 import { type LimitStatus, limitStatus, parseLevels, parseLimits } from "./limits";
 import { formatReport, notify, type ReportSection } from "./notify";
 import { renderPage, type Section } from "./page";
+import {
+  checkTarget,
+  KIND_LABEL,
+  type ProviderTarget,
+  parseProviders,
+  parseTokens,
+} from "./providers";
 import { parseThresholds, spike } from "./spike";
 import {
   buildSeries,
@@ -160,6 +167,67 @@ export async function runCollect(
           await markNotified(env.USAGE, today, s.spikes, collectedAt, s.key);
           await markLimitNotified(env.USAGE, s.key, s.limits, collectedAt);
         }
+      }
+    } catch (e) {
+      errors.push(message(e));
+    }
+  }
+
+  if (errors.length > 0) summary.error = errors.join("; ");
+  return summary;
+}
+
+/** Cron that runs the other-platform checks; its own invocation, so it gets its own 50-subrequest budget. */
+export const PROVIDERS_CRON = "30 * * * *";
+
+/**
+ * Other-platform checks (providers.ts): GitHub, Resend, Supabase, Vercel. Same alert levels, de-duplication and
+ * channels as the Cloudflare limits. One target failing never stops the others.
+ * shortcut: ~1-3 subrequests per target, all in one invocation (free-plan cap 50) → about 15 clients' worth; split
+ * PROVIDERS_JSON across more crons past that.
+ */
+export async function runProviders(
+  env: Env,
+  now: Date = new Date(),
+  fetchImpl: typeof fetch = fetch,
+): Promise<RunSummary> {
+  const today = isoDate(now);
+  const summary: RunSummary = { date: today, written: 0, spikes: 0, notified: 0 };
+  const errors: string[] = [];
+  let targets: ProviderTarget[] = [];
+  let tokens: Record<string, string> = {};
+  let levels: number[] = [];
+  try {
+    targets = parseProviders(env.PROVIDERS_JSON);
+    tokens = parseTokens(env.PROVIDER_TOKENS);
+    levels = parseLevels(env.LIMIT_LEVELS?.trim() || "50,80,95");
+  } catch (e) {
+    summary.error = message(e);
+    return summary;
+  }
+
+  const collectedAt = now.toISOString();
+  const sections: Array<ReportSection & { key: string }> = [];
+  for (const t of targets) {
+    const label = `${t.client} · ${KIND_LABEL[t.kind]}`;
+    try {
+      const statuses = await checkTarget(t, tokens, now, levels, fetchImpl);
+      const crossed = statuses.filter((s) => s.level !== null).length;
+      if (crossed > 0) summary.limitAlerts = (summary.limitAlerts ?? 0) + crossed;
+      const key = `${t.kind}:${t.id}`;
+      const fresh = await filterUnnotifiedLimits(env.USAGE, key, statuses);
+      if (fresh.length > 0) sections.push({ key, label, spikes: [], limits: fresh });
+    } catch (e) {
+      errors.push(`${label}: ${message(e)}`);
+    }
+  }
+
+  if (sections.length > 0) {
+    try {
+      const results = await notify(env, formatReport(today, sections), fetchImpl);
+      summary.notified = results.filter((r) => r.ok).length;
+      if (results.length > 0 && results.every((r) => r.ok)) {
+        for (const s of sections) await markLimitNotified(env.USAGE, s.key, s.limits, collectedAt);
       }
     } catch (e) {
       errors.push(message(e));

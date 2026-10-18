@@ -11,6 +11,16 @@
 # domains: registrable domains; FlareWatch checks their registration (RDAP) daily and warns 30 days before expiry.
 # monitors: HTTP checks every minute. keyword = text the page must contain (catches "200 but broken");
 #         expect = accepted status codes (default [200]).
+# usage: free-plan checks on other platforms, hourly, alerts at the same 50/80/95% levels. `token` is the NAME of a key
+#         in the PROVIDER_TOKENS secret (JSON {"GH_ACME": "github_pat_…"}), never the token itself.
+#         github:   Actions minutes vs 2,000/month. account = user or org login (org: true). Fine-grained PAT created BY
+#                   that account, permission Plan: read (orgs: Administration: read). No repository access needed.
+#         resend:   every quota (emails/day, emails/month, domains, contacts…) with Resend's own limits. Resend has no
+#                   read-only key: create a full-access key used only for this.
+#         supabase: per project ref: paused / unhealthy alert, database size vs 500 MB, file storage vs 1 GB. Scoped PAT
+#                   with projects_read + database_read; one token can cover every org your team belongs to.
+#         vercel:   alert when Vercel blocks the team for exceeding Hobby limits. account = team id (team_…).
+#                   Team-scoped token. (Hobby exposes no usage numbers to tokens.)
 # local: where the project lives on the team's machine (optional; used by the runbook in CLAUDE.md).
 # No secrets in a registry — tokens live in GitHub Actions secrets / Worker secrets.
 
@@ -31,6 +41,9 @@ clients:
     local: acme-web
     domains: [acme.example]
     notes: Free tier only.
+    usage:
+      github: { account: acme, token: GH_ACME }
+      resend: { token: RESEND_ACME }
     monitors:
       - id: site
         name: Website

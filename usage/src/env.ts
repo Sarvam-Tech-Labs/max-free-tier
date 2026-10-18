@@ -12,6 +12,10 @@ export interface Env {
   LIMITS_JSON?: string;
   /** Optional comma-separated percentages at which limit alerts fire. Default "50,80,95". */
   LIMIT_LEVELS?: string;
+  /** Optional JSON array of other-platform targets (GitHub, Resend, Supabase, Vercel); see providers.ts. No secrets. */
+  PROVIDERS_JSON?: string;
+  /** Secret: JSON object of token key → token, for the keys PROVIDERS_JSON names. Never logged. */
+  PROVIDER_TOKENS?: string;
   DISCORD_WEBHOOK_URL?: string;
   SLACK_WEBHOOK_URL?: string;
   /** Telegram bot token from @BotFather. Never logged. Needs TELEGRAM_CHAT_ID too. */
