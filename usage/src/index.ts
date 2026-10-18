@@ -6,11 +6,12 @@
  * HTTP Basic is required:
  *   /              Free-tier limits: every platform's allowances, how they reset, and every detected change
  *   /consumption   pick an email → its platforms, consumption, exact reset times, uptime and domains (?email=)
- *   /tokens        paste, test and delete the platform tokens the monitor uses (tokens.ts)
+ *   /tokens        connect platforms, and paste, test and delete the tokens the monitor uses (tokens.ts, connect.ts)
  *   /classic       the original 7-day table with spike detection
  * POST /ingest is the one exception: the daily GitHub Actions jobs report with their own token (ingest.ts).
  */
 import { authorized } from "./auth";
+import { handleConnectionApi } from "./connect";
 import type { Env } from "./env";
 import { loadDomains, readUptime } from "./health";
 import { handleIngest } from "./ingest";
@@ -69,7 +70,9 @@ export default {
     if (url.pathname === "/ingest" && request.method === "POST") return handleIngest(request, env);
     if (!env.DASHBOARD_PASSWORD) return NOT_FOUND();
     const isTokenApi = url.pathname === "/api/tokens" || url.pathname.startsWith("/api/tokens/");
-    if (request.method !== "GET" && !isTokenApi) return NOT_FOUND();
+    const isConnectApi =
+      url.pathname === "/api/connections" || url.pathname.startsWith("/api/connections/");
+    if (request.method !== "GET" && !isTokenApi && !isConnectApi) return NOT_FOUND();
     if (!(await authorized(request, env.DASHBOARD_PASSWORD))) {
       return new Response("Sign in", {
         status: 401,
@@ -80,6 +83,7 @@ export default {
       });
     }
     if (isTokenApi) return handleTokenApi(request, env);
+    if (isConnectApi) return handleConnectionApi(request, env);
     switch (url.pathname) {
       case "/":
         return html(renderLimitsPage(await pageData(env)));

@@ -7,8 +7,11 @@
  *   POST   /api/tokens             { name, value, expires? }   verify, then add or replace
  *   POST   /api/tokens/NAME/test                                verify the saved token now
  *   DELETE /api/tokens/NAME                                     remove it and the readings it produced
+ * (connect.ts adds /api/connections: connect a whole platform from the site.)
  * A token name must be one a registry `usage:` block asks for, so tokens cannot pile up under arbitrary names.
  */
+
+import { type Connection, safeConnections, withConnections } from "./connections";
 import { type Sealed, seal, unseal } from "./crypto";
 import type { Env } from "./env";
 import type { LimitStatus } from "./limits";
@@ -106,7 +109,7 @@ export async function listTokens(db: D1Database): Promise<TokenMeta[]> {
   return res.results;
 }
 
-async function putToken(
+export async function putToken(
   db: D1Database,
   name: string,
   sealed: Sealed,
@@ -169,13 +172,13 @@ export async function saveTargetStatus(
     .run();
 }
 
-async function deleteToken(db: D1Database, name: string): Promise<boolean> {
+export async function deleteToken(db: D1Database, name: string): Promise<boolean> {
   const res = await db.prepare("DELETE FROM tokens WHERE name = ?1").bind(name).run();
   return (res.meta?.changes ?? 0) > 0;
 }
 
 /** Forget what a removed token produced, so the site shows those platforms as not connected again. */
-async function clearTargets(
+export async function clearTargets(
   db: D1Database,
   targets: readonly string[],
   token: string,
@@ -221,7 +224,7 @@ export type Verified =
     }
   | { ok: false; error: string };
 
-function explain(kind: ProviderKind, e: unknown): string {
+export function explain(kind: ProviderKind, e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
   const code = /HTTP (\d{3})/.exec(msg)?.[1];
   const who = KIND_LABEL[kind];
@@ -259,7 +262,7 @@ export async function verifyToken(
   return { ok: true, results, meters, ...(info.expiresAt ? { expiresAt: info.expiresAt } : {}) };
 }
 
-function describeVerified(kind: ProviderKind, v: Extract<Verified, { ok: true }>): string {
+export function describeVerified(kind: ProviderKind, v: Extract<Verified, { ok: true }>): string {
   const blocked = v.results.some((r) => r.statuses.some((s) => s.note !== undefined));
   const what =
     v.meters > 0
@@ -272,7 +275,7 @@ function describeVerified(kind: ProviderKind, v: Extract<Verified, { ok: true }>
 
 // ───────────────────────────── API ─────────────────────────────
 
-const reply = (status: number, body: Record<string, unknown>): Response =>
+export const reply = (status: number, body: Record<string, unknown>): Response =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
@@ -283,7 +286,7 @@ const reply = (status: number, body: Record<string, unknown>): Response =>
  * hostile page could otherwise add or delete tokens. These requests must carry a custom header (which another site cannot
  * send without a CORS preflight we never allow), come from this site's own origin, and (for POST) be JSON.
  */
-function guard(request: Request): Response | null {
+export function guard(request: Request): Response | null {
   if (request.headers.get("X-Requested-With") !== "max-free-tier") {
     return reply(403, { ok: false, error: "Refused: this request did not come from the site." });
   }
@@ -304,18 +307,18 @@ function guard(request: Request): Response | null {
   return null;
 }
 
-const MIN_TOKEN = 8;
-const MAX_TOKEN = 4096;
+export const MIN_TOKEN = 8;
+export const MAX_TOKEN = 4096;
 
 /** "2026-12-31" → end of that day, UTC. null for empty; undefined for an invalid date. */
-function parseExpiry(raw: unknown): string | null | undefined {
+export function parseExpiry(raw: unknown): string | null | undefined {
   if (raw === undefined || raw === null || raw === "") return null;
   if (typeof raw !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
   const ms = Date.parse(`${raw}T23:59:59.000Z`);
   return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
 
-async function persistVerified(
+export async function persistVerified(
   env: Env,
   name: string,
   v: Extract<Verified, { ok: true }>,
@@ -329,12 +332,13 @@ async function persistVerified(
 
 export async function handleTokenApi(
   request: Request,
-  env: Env,
+  rawEnv: Env,
   now: Date = new Date(),
   f: typeof fetch = fetch,
 ): Promise<Response> {
   const refused = guard(request);
   if (refused) return refused;
+  const env = await withConnections(rawEnv); // names asked for by connections made on the site count too
   const key = env.TOKEN_ENCRYPTION_KEY;
   if (!key) {
     return reply(409, {
@@ -524,16 +528,20 @@ export interface TokensOverview {
   enabled: boolean;
   required: RequiredToken[];
   managed: TokenMeta[];
+  /** Platforms connected on the site (as opposed to the registry's usage blocks). */
+  connections: Connection[];
   status: TargetStatusRow[];
   /** Names that exist in the deployment secret (PROVIDER_TOKENS); names only. */
   secretNames: string[];
 }
 
-export async function tokensOverview(env: Env): Promise<TokensOverview> {
+export async function tokensOverview(rawEnv: Env): Promise<TokensOverview> {
+  const env = await withConnections(rawEnv);
   return {
     enabled: Boolean(env.TOKEN_ENCRYPTION_KEY),
     required: requiredTokens(env),
     managed: await listTokens(env.USAGE),
+    connections: await safeConnections(env.USAGE),
     status: await loadTargetStatus(env.USAGE),
     secretNames: Object.keys(safeSecretTokens(env)),
   };

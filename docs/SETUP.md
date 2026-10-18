@@ -95,12 +95,22 @@ secret in both repos and the repository variable `INGEST_URL`
 (`https://max-free-tier-usage.<subdomain>.workers.dev/ingest`) in the repo that runs the terms watch.
 `/classic` keeps the original 7-day table with spike detection.
 
-### Tokens (GitHub, Resend, Supabase, Vercel)
-Add a `usage:` block to a client in the registry (see `clients.example.yaml`): it names a token, e.g. `token: GH_ACME`.
-Then open the site's **Tokens** page: it lists every name the registry needs and which are missing. Click **Add token**,
-paste it, and the site verifies it against the platform, encrypts it (AES-256-GCM, key = the `TOKEN_ENCRYPTION_KEY`
-secret) and shows the platform as connected straight away. You never send a token to anyone else, and it is never shown
-again: the page keeps only the last four characters. From there you can **Replace**, **Test** and **Delete** a token.
+### Connect a platform (GitHub, Resend, Supabase, Vercel) — no registry edit, no redeploy
+Open the site's **Tokens** page and click **Connect a platform**. Pick the platform, paste its token, and choose which
+client it is for: an existing one, or **A new client…** with its name and the email its accounts use (that email is what
+groups it in the Consumption tab's sidebar). The site finds the rest from the token itself: GitHub's login, the Vercel
+team (it asks which if the token sees several), the Supabase projects. It then verifies the token against the platform,
+encrypts it (AES-256-GCM, key = the `TOKEN_ENCRYPTION_KEY` secret) and shows the platform as connected straight away.
+Nothing is saved if the check fails. For GitHub billing on an organization, type the organization's name in the optional field.
+
+A connected row has **Replace**, **Test** and **Disconnect**; Disconnect removes the connection, its token and its
+readings. Each client can have one connection per platform. Connections live in the site's database next to the registry's
+own; if the registry later gains a `usage:` block for the same client and platform, the registry's wins.
+
+### Or name the token in the registry
+A client's `usage:` block (see `clients.example.yaml`) names a token, e.g. `token: GH_ACME`. The **Tokens** page then lists
+that name as **Missing**; click **Add token** and paste it. The token is never shown again: the page keeps only the last
+four characters. **Replace**, **Test** and **Delete** work on it. Use this when the registry should own the client.
 
 Telegram warns you when a saved token fails two checks in a row (then at most once a day) or expires within 14 days.
 GitHub's expiry is read automatically; for the others enter the date you chose when creating the token.

@@ -17,7 +17,7 @@ import {
 import type { DomainRow, MonitorState, UptimeView } from "./health";
 import type { ClientInfo, Ledger, LedgerProvider, Meter, Platform } from "./ledger";
 import { escapeHtml as esc } from "./page";
-import { KIND_LABEL, type ProviderKind } from "./providers";
+import { KIND_LABEL, KINDS, type ProviderKind } from "./providers";
 import type { AlertRow, CheckRun } from "./store";
 import { icon, shell } from "./theme";
 import { daysUntil, formatInstant, nextReset, relative, zoneLabel } from "./time";
@@ -655,15 +655,22 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
           : "";
       const btn = (attrs: string, ico: Parameters<typeof icon>[0], label: string, cls = "") =>
         `<button type="button" class="btn small ${cls}" ${attrs}${disabled}>${icon(ico, 14)}${label}</button>`;
+      const conn = o.connections.find((c) => c.tokenName === r.name);
+      const remove = conn
+        ? btn(`data-connection-delete="${esc(conn.id)}"`, "trash", "Disconnect", "danger")
+        : m
+          ? btn(`data-token-delete="${esc(r.name)}"`, "trash", "Delete", "danger")
+          : "";
       const actions =
         state.kind === "missing"
-          ? btn(`data-token-open="${esc(r.name)}" data-mode="add"`, "key", "Add token", "primary")
+          ? btn(`data-token-open="${esc(r.name)}" data-mode="add"`, "key", "Add token", "primary") +
+            remove
           : [
               btn(`data-token-open="${esc(r.name)}" data-mode="replace"`, "key", "Replace"),
               btn(`data-token-test="${esc(r.name)}"`, "refresh", "Test"),
-              m ? btn(`data-token-delete="${esc(r.name)}"`, "trash", "Delete", "danger") : "",
+              remove,
             ].join("");
-      return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${added ? `<div class="muted small">${added}</div>` : ""}</td><td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td><td data-label="Used for">${usedFor(r, d.ledger)}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
+      return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${conn ? ` ${badge("On the site", "mute")}` : ""}${added ? `<div class="muted small">${added}</div>` : ""}</td><td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td><td data-label="Used for">${usedFor(r, d.ledger)}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
     })
     .join("");
 
@@ -682,6 +689,32 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
     })
     .join("");
 
+  const clientOptions = [...d.ledger.data.clients]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(
+      (c) =>
+        `<option value="${esc(c.id)}">${esc(c.name)}${c.email ? ` · ${esc(c.email)}` : ""}</option>`,
+    )
+    .join("");
+  const kindHelps = KINDS.map(
+    (k) =>
+      `<template data-kind-help="${k}"><p>${esc(KIND_HELP[k].scope)}</p><p><a href="${esc(KIND_HELP[k].url)}" target="_blank" rel="noopener noreferrer">Create it on ${esc(KIND_LABEL[k])} ↗</a></p></template>`,
+  ).join("");
+  const connectDialog = `<dialog id="connect-dialog" aria-labelledby="connect-title"><form method="dialog" autocomplete="off">
+<h2 id="connect-title">Connect a platform</h2>
+<p class="muted" style="margin:0">Paste a token and say who it is for. The site finds the account from the token, so there is nothing else to type.</p>
+<div class="field"><label for="c-kind">Platform</label><select id="c-kind" name="kind">${KINDS.map((k) => `<option value="${k}">${esc(KIND_LABEL[k])}</option>`).join("")}</select></div>
+<div class="help" data-kind-box></div>
+<div class="field"><label for="c-value">Token</label><input id="c-value" name="value" type="password" autocomplete="new-password" spellcheck="false" data-1p-ignore data-lpignore="true" required minlength="8" placeholder="Paste the token here"><span class="hint">It is checked against the platform, encrypted, and never shown again.</span></div>
+<div class="field"><label for="c-client">Which client is this for?</label><select id="c-client" name="client">${clientOptions}<option value="__new__">A new client…</option></select></div>
+<div data-new hidden class="stack" style="gap:16px"><div class="field"><label for="c-name">Client name</label><input id="c-name" name="newName" type="text" maxlength="80" placeholder="e.g. Acme Traders"></div><div class="field"><label for="c-email">Email its accounts use</label><input id="c-email" name="newEmail" type="email" maxlength="254" placeholder="the email these platform accounts are registered with"><span class="hint">Groups this client's platforms under that email on the Consumption tab.</span></div></div>
+<div class="field" data-github hidden><label for="c-org">GitHub organization (optional)</label><input id="c-org" name="org" type="text" maxlength="39" placeholder="only if billing is on an organization"></div>
+<div class="field" data-team hidden><label for="c-team">Vercel team</label><select id="c-team" name="team"></select></div>
+<div class="field"><label for="c-expires">Expires on (optional)</label><input id="c-expires" name="expires" type="date"><span class="hint">The date you chose when creating it, so you are warned in time. GitHub's is read automatically.</span></div>
+<div class="form-error" role="alert" data-err hidden></div>
+<div class="dialog-actions"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" data-save>Verify and connect</button></div>
+</form></dialog>`;
+
   const dialog = `<dialog id="token-dialog" aria-labelledby="token-title"><form method="dialog" autocomplete="off">
 <h2 id="token-title" data-title>Add token</h2>
 <div class="help" data-help></div>
@@ -690,13 +723,13 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
 <div class="field"><label for="token-expires">Expires on (optional)</label><input id="token-expires" name="expires" type="date"><span class="hint">The date you chose when creating it, so you are warned in time. GitHub's is read automatically.</span></div>
 <div class="form-error" role="alert" data-err hidden></div>
 <div class="dialog-actions"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" data-save>Verify and save</button></div>
-</form></dialog><div id="toast" class="toast" role="status" aria-live="polite" hidden></div>`;
+</form></dialog>${connectDialog}<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>`;
 
-  const body = `<div class="page-head"><h1>Tokens</h1><p class="lead">The access tokens the monitor uses to read your platforms. Paste them here: they are verified, encrypted and never shown again.</p></div>
+  const body = `<div class="page-head"><h1>Tokens</h1><p class="lead">Connect a platform here: paste its token, say which client it is for, and the site does the rest. Tokens are verified, encrypted and never shown again.</p><div class="actions" style="margin-top:16px"><button type="button" class="btn primary" data-connect-open${disabled}>${icon("key", 16)}Connect a platform</button></div></div>
 <div class="stack">
 ${off ? `<div class="note bad">${icon("alert", 18)}<div><b>Token storage is not enabled.</b> Set the <code>TOKEN_ENCRYPTION_KEY</code> secret and redeploy to add tokens here. Tokens set in the deployment secret keep working.</div></div>` : ""}
-<section class="card" aria-label="Tokens the registry needs"><div class="card-head"><h2>Needed by the registry</h2></div>
-${rows === "" ? `<div class="empty">No client in the registry has a <code>usage:</code> block, so no token is needed yet.</div>` : `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Platform</th><th>Used for</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`}
+<section class="card" aria-label="Connected platforms"><div class="card-head"><h2>Connected platforms</h2></div>
+${rows === "" ? `<div class="empty">Nothing is connected yet. Use <b>Connect a platform</b> above.</div>` : `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Platform</th><th>Used for</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`}
 </section>
 ${others.length > 0 ? `<section class="card" aria-label="Other saved tokens"><div class="card-head"><h2>Other saved tokens</h2></div><div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Note</th><th>Actions</th></tr></thead><tbody>${otherRows}</tbody></table></div></section>` : ""}
 <section class="card" aria-label="How tokens are kept"><div class="card-head"><span class="tile">${icon("shield", 22)}</span><h2>How tokens are kept</h2></div>
@@ -706,6 +739,6 @@ ${others.length > 0 ? `<section class="card" aria-label="Other saved tokens"><di
 <li>Verified against the platform before saving, then checked every hour. A Telegram alert follows if one fails twice in a row or expires within 14 days.</li>
 <li>Anyone with the site password can add, replace or delete tokens, but cannot read them. Prefer read-only tokens where the platform offers them.</li>
 </ul></section>
-</div>${helps}${dialog}`;
+</div>${helps}${kindHelps}${dialog}`;
   return page(d, "Tokens", "tokens", body);
 }

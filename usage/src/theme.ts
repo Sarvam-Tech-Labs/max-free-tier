@@ -137,6 +137,9 @@ dialog h2{margin:0}
 .help{background:rgba(255,255,255,.03);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:12px 16px;color:var(--text-secondary)}
 .help p{margin:0 0 6px}.help p:last-child{margin:0}
 .field input[type=password],.field input[type=text],.field input[type=date]{background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:10px 12px;font:400 .875rem var(--font-sans);width:100%;transition:var(--transition-fast)}
+.field input[type=email],.field select{background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:10px 12px;font:400 .875rem var(--font-sans);width:100%;transition:var(--transition-fast)}
+.field select:hover,.field input[type=email]:hover{border-color:var(--border-hover)}
+.field select:focus,.field input[type=email]:focus{outline:none;border-color:var(--accent-primary);box-shadow:0 0 0 2px rgba(99,102,241,.2)}
 .field input[type=password]{font-family:var(--font-mono)}
 .field input:hover{border-color:var(--border-hover)}
 .field input:focus{outline:none;border-color:var(--accent-primary);box-shadow:0 0 0 2px rgba(99,102,241,.2)}
@@ -255,6 +258,38 @@ const SCRIPT = `
       if(r.ok){dlg.close();say(r.detail||'Saved.',true);setTimeout(()=>location.reload(),1400)}
       else{err.textContent=r.error||'Could not save the token.';err.hidden=false;save.disabled=false}
     });
+    const cd=document.getElementById('connect-dialog');
+    if(cd){
+      const c=s=>cd.querySelector(s),ce=c('[data-err]'),ck=c('[name=kind]'),cv=c('[name=value]'),cc=c('[name=client]'),cn=c('[data-new]'),
+        cname=c('[name=newName]'),cmail=c('[name=newEmail]'),corg=c('[name=org]'),cteam=c('[name=team]'),cx=c('[name=expires]'),cs=c('[data-save]'),
+        gh=c('[data-github]'),tm=c('[data-team]'),box=c('[data-kind-box]');
+      const sync=()=>{
+        const t=document.querySelector('template[data-kind-help="'+ck.value+'"]');box.replaceChildren(t?t.content.cloneNode(true):'');
+        gh.hidden=ck.value!=='github';if(ck.value!=='vercel'){tm.hidden=true;cteam.replaceChildren()}
+        cn.hidden=cc.value!=='__new__';
+      };
+      const reset=()=>{cv.value='';cx.value='';corg.value='';cname.value='';cmail.value='';ce.hidden=true;cs.disabled=false;cs.textContent='Verify and connect';tm.hidden=true;cteam.replaceChildren();sync()};
+      document.querySelectorAll('[data-connect-open]').forEach(b=>b.addEventListener('click',()=>{reset();cd.showModal();cv.focus()}));
+      ck.addEventListener('change',sync);cc.addEventListener('change',sync);
+      cd.addEventListener('close',reset);c('[data-cancel]').addEventListener('click',()=>cd.close());
+      c('form').addEventListener('submit',async e=>{
+        e.preventDefault();cs.disabled=true;ce.hidden=true;cs.textContent='Verifying…';
+        const body={kind:ck.value,value:cv.value,expires:cx.value||undefined};
+        if(cc.value==='__new__')body.newClient={name:cname.value,email:cmail.value};else body.clientId=cc.value;
+        if(ck.value==='github'&&corg.value.trim())body.org=corg.value.trim();
+        if(ck.value==='vercel'&&!tm.hidden&&cteam.value)body.team=cteam.value;
+        const r=await call('/api/connections','POST',body);
+        cs.textContent='Verify and connect';
+        if(r.ok){cv.value='';cd.close();say(r.detail||'Connected.',true);setTimeout(()=>location.reload(),1600)}
+        else if(r.choose){cteam.replaceChildren(...r.choose.map(o=>{const x=document.createElement('option');x.value=o.id;x.textContent=o.name;return x}));tm.hidden=false;ce.textContent=r.error;ce.hidden=false;cs.disabled=false}
+        else{ce.textContent=r.error||'Could not connect.';ce.hidden=false;cs.disabled=false}
+      });
+    }
+    document.querySelectorAll('[data-connection-delete]').forEach(b=>b.addEventListener('click',async()=>{
+      if(b.dataset.armed!=='1'){b.dataset.armed='1';const old=b.textContent;b.textContent='Click again to disconnect';setTimeout(()=>{b.dataset.armed='';b.textContent=old},4000);return}
+      b.disabled=true;const r=await call('/api/connections/'+encodeURIComponent(b.dataset.connectionDelete),'DELETE');
+      if(r.ok)location.reload();else{b.disabled=false;say(r.error||'Could not disconnect.',false)}
+    }));
     document.querySelectorAll('[data-token-test]').forEach(b=>b.addEventListener('click',async()=>{
       b.disabled=true;const old=b.textContent;b.textContent='Testing…';
       const r=await call('/api/tokens/'+b.dataset.tokenTest+'/test','POST');

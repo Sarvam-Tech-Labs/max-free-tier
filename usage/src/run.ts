@@ -6,6 +6,7 @@
  *               D1 → spike check → (opt-in) free-plan limit check → one combined, optional notification.
  *               Nothing here calls a Cloudflare write API.
  */
+import { withConnections } from "./connections";
 import type { Env } from "./env";
 import { fetchUsage, toRows } from "./graphql";
 import { domainsOf, refreshDomains } from "./health";
@@ -244,10 +245,11 @@ export const PROVIDERS_CRON = "30 * * * *";
  * PROVIDERS_JSON across more crons past that.
  */
 export async function runProviders(
-  env: Env,
+  rawEnv: Env,
   now: Date = new Date(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<RunSummary> {
+  const env = await withConnections(rawEnv); // the registry's targets plus those connected on the site
   const today = isoDate(now);
   const summary: RunSummary = { date: today, written: 0, spikes: 0, notified: 0 };
   const errors: string[] = [];

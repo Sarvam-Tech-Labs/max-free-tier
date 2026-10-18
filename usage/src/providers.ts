@@ -45,10 +45,10 @@ export const PROVIDER_LIMITS = {
   supabaseStorageBytes: 1e9,
 } as const;
 
-const GITHUB_API = "https://api.github.com";
+export const GITHUB_API = "https://api.github.com";
 const RESEND_API = "https://api.resend.com";
-const SUPABASE_API = "https://api.supabase.com";
-const VERCEL_API = "https://api.vercel.com";
+export const SUPABASE_API = "https://api.supabase.com";
+export const VERCEL_API = "https://api.vercel.com";
 
 /** PROVIDERS_JSON → targets. Empty → []. Invalid → throws (shows up in the run log). */
 export function parseProviders(json: string | undefined): ProviderTarget[] {

@@ -756,7 +756,7 @@ describe("Tokens page", () => {
   it("nothing in the registry needs a token → says so; names are escaped", async () => {
     const empty = base({ PROVIDERS_JSON: undefined });
     expect(renderTokensPage(await dataFor(empty), await tokensOverview(empty))).toContain(
-      "No client in the registry has a <code>usage:</code> block",
+      "Nothing is connected yet",
     );
     const evil = base({ PROVIDERS_JSON: JSON.stringify([{ ...gh, client: "<img src=x>" }]) });
     const html = renderTokensPage(await dataFor(evil), await tokensOverview(evil));

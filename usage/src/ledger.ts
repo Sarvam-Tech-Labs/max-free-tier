@@ -3,6 +3,8 @@
  * Cloudflare meters come from usage_daily; other platforms from the latest stored reading (provider_readings).
  * Pure data: no HTML here.
  */
+
+import { withConnections } from "./connections";
 import type { Env } from "./env";
 import { FREE_PLAN_LIMITS, type Limit, parseLimits } from "./limits";
 import { KIND_LABEL, type ProviderKind, type ProviderTarget, parseProviders } from "./providers";
@@ -269,7 +271,8 @@ function targetProvider(
   };
 }
 
-export async function buildLedger(env: Env, now: Date = new Date()): Promise<Ledger> {
+export async function buildLedger(rawEnv: Env, now: Date = new Date()): Promise<Ledger> {
+  const env = await withConnections(rawEnv);
   const today = isoDate(now);
   const clients = parseClients(env.CLIENTS_JSON);
   const cf = await cloudflareProviders(env, today, clients);
