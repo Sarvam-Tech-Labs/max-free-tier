@@ -180,6 +180,8 @@ export interface ReadingRow {
   limit: number;
   period: "day" | "month";
   note: string | null;
+  /** When the platform's API says this quota resets (ISO), or null. */
+  resetsAt: string | null;
   checkedAt: string;
 }
 
@@ -191,12 +193,21 @@ export async function saveReadings(
   checkedAt: string,
 ): Promise<void> {
   const insert = db.prepare(
-    "INSERT INTO provider_readings (target, metric, used, limit_value, period, note, checked_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    "INSERT INTO provider_readings (target, metric, used, limit_value, period, note, resets_at, checked_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
   );
   await db.batch([
     db.prepare("DELETE FROM provider_readings WHERE target = ?1").bind(target),
     ...statuses.map((s) =>
-      insert.bind(target, s.metric, s.used, s.limit, s.period, s.note ?? null, checkedAt),
+      insert.bind(
+        target,
+        s.metric,
+        s.used,
+        s.limit,
+        s.period,
+        s.note ?? null,
+        s.resetsAt ?? null,
+        checkedAt,
+      ),
     ),
   ]);
 }
@@ -204,7 +215,7 @@ export async function saveReadings(
 export async function loadReadings(db: D1Database): Promise<ReadingRow[]> {
   const res = await db
     .prepare(
-      "SELECT target, metric, used, limit_value AS limitValue, period, note, checked_at AS checkedAt FROM provider_readings ORDER BY target, metric",
+      "SELECT target, metric, used, limit_value AS limitValue, period, note, resets_at AS resetsAt, checked_at AS checkedAt FROM provider_readings ORDER BY target, metric",
     )
     .all<Omit<ReadingRow, "limit"> & { limitValue: number }>();
   return res.results.map(({ limitValue, ...r }) => ({ ...r, limit: limitValue }));

@@ -1,24 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { CATALOG, PLATFORM_NAME } from "../src/catalog";
-import type { Env } from "../src/env";
-import {
-  buildLedger,
-  type Ledger,
-  type LedgerProvider,
-  type Meter,
-  parseClients,
-} from "../src/ledger";
-import { FREE_PLAN_LIMITS, type LimitStatus } from "../src/limits";
-import { KINDS } from "../src/providers";
-import { saveReadings, upsertRows } from "../src/store";
-import { fmtValue, groupByClient, renderClientsPage, renderPlatformsPage } from "../src/views";
-import { createFakeD1 } from "./helpers/fake-d1";
+import { CATALOG, cycleOf, itemFor, platformOf } from "../src/catalog";
+import type { UptimeView } from "../src/health";
+import type { Ledger, LedgerProvider, Meter } from "../src/ledger";
+import { shell } from "../src/theme";
+import { daysUntil, formatInstant, nextReset, relative, safeZone, zoneLabel } from "../src/time";
+import { accountsOf, type PageData, renderConsumptionPage, renderLimitsPage } from "../src/views";
 
-const PERIOD = {
-  start: "2026-10-01T00:00:00.000Z",
-  end: "2026-11-01T00:00:00.000Z",
-  anchor: "api" as const,
-};
+const NOW = new Date("2026-10-18T11:00:00Z");
+const unix = (iso: string) => Date.parse(iso) / 1000;
+
 const meter = (key: string, used: number, limit: number, over: Partial<Meter> = {}): Meter => ({
   key,
   label: key,
@@ -34,59 +24,76 @@ const card = (
   name: over.id,
   account: "acct",
   plan: "Free",
-  source: "official",
   auth: "read-only",
-  period: PERIOD,
   metrics: [],
   ...over,
 });
+const client = (
+  id: string,
+  name: string,
+  email: string | undefined,
+  over: Record<string, unknown> = {},
+) => ({
+  id,
+  name,
+  ...(email ? { email } : {}),
+  status: "live",
+  platforms: [] as string[],
+  accounts: [] as string[],
+  monitors: [] as Array<{ id: string; name: string; url: string }>,
+  domains: [] as string[],
+  ...over,
+});
+
+const UPTIME: UptimeView = {
+  lastUpdate: unix("2026-10-18T10:59:00Z"),
+  monitors: {
+    acme_site: {
+      status: "up",
+      incidents: [
+        {
+          start: [unix("2026-10-10T08:00:00Z")],
+          end: unix("2026-10-10T08:12:00Z"),
+          error: ["HTTP 502"],
+        },
+      ],
+      latest: { loc: "SIN", ping: 123.4, time: unix("2026-10-18T10:59:00Z") },
+    },
+    acme_api: {
+      status: "down",
+      incidents: [{ start: [unix("2026-10-18T10:40:00Z")], error: ["Keyword missing"] }],
+    },
+    shared_site: { status: "up", incidents: [] },
+  },
+};
 
 function ledger(): Ledger {
   return {
-    series: [],
     data: {
-      generatedAt: "2026-10-18T10:30:00.000Z",
+      generatedAt: NOW.toISOString(),
       project: "Agency",
       clients: [
-        {
-          id: "acme",
-          name: "Acme Books",
-          email: "owner@acme.in",
-          status: "live",
-          platforms: ["cloudflare-workers"],
-          accounts: [],
-          monitors: [],
-          domains: [],
-        },
-        {
-          id: "beta",
-          name: "Beta Foods",
-          status: "unconfirmed",
-          platforms: ["vercel", "supabase"],
-          accounts: [],
-          monitors: [],
-          domains: [],
-        },
-        {
-          id: "calm",
-          name: "Calm Co",
-          email: "hi@calm.in",
-          status: "live",
-          platforms: [],
-          accounts: [],
-          monitors: [],
-          domains: [],
-        },
-        {
-          id: "evil",
-          name: "<script>alert(1)</script>",
-          email: 'x@y.in"><b>',
-          status: "live",
-          platforms: [],
-          accounts: [],
-          monitors: [],
-          domains: [],
-        },
+        client("acme", "Acme Books", "owner@acme.in", {
+          platforms: [
+            "cloudflare-workers",
+            "vercel",
+            "resend",
+            "github-actions",
+            "supabase",
+            "razorpay",
+          ],
+          monitors: [
+            { id: "acme_site", name: "Website", url: "https://acme.in" },
+            { id: "acme_api", name: "API", url: "https://acme.in/api" },
+          ],
+          domains: ["acme.in"],
+        }),
+        client("shared", "Shared Site", "shared@stl.in", {
+          monitors: [{ id: "shared_site", name: "Site", url: "https://shared.in" }],
+        }),
+        client("shared2", "Shared App", "shared@stl.in", { platforms: ["vercel"] }),
+        client("beta", "Beta Foods", undefined, { status: "unconfirmed", platforms: ["firebase"] }),
+        client("evil", "<script>alert(1)</script>", 'x@y.in"><b>', {}),
       ],
       providers: [
         card({
@@ -94,9 +101,16 @@ function ledger(): Ledger {
           platform: "cloudflare",
           clientId: "acme",
           name: "Acme Books · Cloudflare",
+          account: "0a1b2c3d",
           metrics: [
-            meter("workers.requests", 96_000, 100_000, { label: "Workers requests (per day)" }),
-            meter("kv.read", 10, 100_000),
+            meter("workers.requests", 96_000, 100_000, {
+              label: "Workers requests",
+              resetsAt: "2026-10-19T00:00:00.000Z",
+            }),
+            meter("kv.read", 10, 100_000, {
+              label: "KV reads",
+              resetsAt: "2026-10-19T00:00:00.000Z",
+            }),
           ],
         }),
         card({
@@ -106,227 +120,440 @@ function ledger(): Ledger {
           metrics: [
             meter("github.actions_minutes", 1500, 2000, {
               unit: "minutes",
-              label: "Actions minutes",
+              label: "Actions minutes (private repos)",
+              resetsAt: "2026-11-01T00:00:00.000Z",
             }),
           ],
         }),
         card({
-          id: "cf-calm",
-          platform: "cloudflare",
-          clientId: "calm",
-          metrics: [meter("workers.requests", 100, 100_000)],
+          id: "rs-acme",
+          platform: "resend",
+          clientId: "acme",
+          metrics: [
+            meter("resend.emails_daily", 20, 100, {
+              label: "Emails per day",
+              resetsAt: "2026-10-19T09:30:00.000Z",
+            }),
+          ],
         }),
         card({
-          id: "cf-stray",
-          platform: "cloudflare",
-          name: "Cloudflare",
-          account: "stray-account",
-          metrics: [meter("workers.requests", 5, 100_000)],
-        }),
-        card({
-          id: "sb-calm",
+          id: "sb-acme",
           platform: "supabase",
-          clientId: "calm",
+          clientId: "acme",
+          account: "abc, def",
           status: { label: "Alert", value: "Blog (def) is PAUSED" },
           metrics: [
             meter("supabase.abc.db_bytes", 450e6, 500e6, {
               unit: "bytes",
               resets: false,
               label: "Database size · abc",
+              confidence: "approximate",
             }),
-            meter("supabase.xyz.db_bytes", 1e6, 500e6, {
+            meter("supabase.abc.storage_bytes", 1e6, 1e9, {
               unit: "bytes",
               resets: false,
+              label: "File storage · abc",
               note: "Last successful check 2026-10-18T01:00:00Z; the latest check failed",
             }),
           ],
+        }),
+        card({
+          id: "cf-stray",
+          platform: "cloudflare",
+          name: "Cloudflare",
+          metrics: [meter("workers.requests", 5, 100_000)],
         }),
       ],
     },
   };
 }
 
-describe("fmtValue", () => {
-  it("formats counts, bytes and minutes", () => {
-    expect(fmtValue("count", 12)).toBe("12");
-    expect(fmtValue("count", 12_345)).toBe("12.3K");
-    expect(fmtValue("count", 2_500_000)).toBe("2.5M");
-    expect(fmtValue("bytes", 512)).toBe("512 B");
-    expect(fmtValue("bytes", 2_500)).toBe("3 KB");
-    expect(fmtValue("bytes", 450e6)).toBe("450.0 MB");
-    expect(fmtValue("bytes", 1.5e9)).toBe("1.50 GB");
-    expect(fmtValue("minutes", 1500)).toBe("1,500 min");
+function data(over: Partial<PageData> = {}): PageData {
+  return {
+    ledger: ledger(),
+    health: {
+      uptime: UPTIME,
+      now: NOW,
+      domains: [
+        {
+          domain: "acme.in",
+          expires: "2027-01-09T00:00:00.000Z",
+          error: null,
+          checkedAt: NOW.toISOString(),
+        },
+      ],
+    },
+    runs: [
+      { name: "collect", at: "2026-10-18T10:00:00Z", ok: true, summary: "ok" },
+      { name: "terms", at: "2026-10-18T03:30:00Z", ok: true, summary: "no changes" },
+      { name: "drift", at: "2026-10-18T03:31:00Z", ok: false, summary: "docs drift" },
+    ],
+    alerts: [],
+    tz: "Asia/Kolkata",
+    ...over,
+  };
+}
+
+const items = CATALOG.flatMap((c) => c.items);
+const count = (html: string, re: RegExp): number => [...html.matchAll(re)].length;
+
+describe("time", () => {
+  it("formats exact instants in the org zone with UTC for the tooltip", () => {
+    expect(formatInstant("2026-10-19T00:00:00Z", "Asia/Kolkata")).toEqual({
+      text: "19 Oct 2026, 05:30 IST",
+      utc: "19 Oct 2026, 00:00 UTC",
+    });
+    expect(formatInstant("2026-10-19T00:00:00Z", "UTC").text).toBe("19 Oct 2026, 00:00 UTC");
+    expect(formatInstant("2026-12-31T20:00:00Z", "Asia/Kolkata").text).toBe(
+      "1 Jan 2027, 01:30 IST",
+    );
+    expect(zoneLabel("Asia/Kolkata")).toBe("IST");
+    expect(zoneLabel("Europe/Paris")).toBe("Europe/Paris");
+  });
+  it("safeZone falls back to IST for a typo", () => {
+    expect(safeZone("Europe/Paris")).toBe("Europe/Paris");
+    expect(safeZone("Not/AZone")).toBe("Asia/Kolkata");
+    expect(safeZone(undefined)).toBe("Asia/Kolkata");
+    expect(safeZone("  ")).toBe("Asia/Kolkata");
+  });
+  it("relative reads naturally in both directions", () => {
+    expect(relative("2026-10-18T11:00:20Z", NOW)).toBe("just now");
+    expect(relative("2026-10-18T11:30:00Z", NOW)).toBe("in 30 min");
+    expect(relative("2026-10-19T00:00:00Z", NOW)).toBe("in 13 h");
+    expect(relative("2026-11-01T00:00:00Z", NOW)).toBe("in 14 days"); // 13.6 days
+    expect(relative("2026-10-18T03:30:00Z", NOW)).toBe("8 h ago");
+  });
+  it("nextReset: UTC midnight, the 1st of the next month (also across the year), nothing for provider-dependent cycles", () => {
+    expect(nextReset("utc-day", NOW)).toBe("2026-10-19T00:00:00.000Z");
+    expect(nextReset("utc-month", NOW)).toBe("2026-11-01T00:00:00.000Z");
+    expect(nextReset("utc-month", new Date("2026-12-31T23:59:00Z"))).toBe(
+      "2027-01-01T00:00:00.000Z",
+    );
+    expect(nextReset("billing", NOW)).toBeUndefined();
+    expect(nextReset("rolling", NOW)).toBeUndefined();
+    expect(nextReset("none", NOW)).toBeUndefined();
+  });
+  it("daysUntil counts whole days, negative once past", () => {
+    expect(daysUntil("2026-10-28T11:00:00Z", NOW)).toBe(10);
+    expect(daysUntil("2026-10-17T11:00:00Z", NOW)).toBe(-1);
   });
 });
 
 describe("catalog", () => {
-  it("every tracked Cloudflare limit has a catalog entry, and no catalog entry is both tracked-less and unexplained", () => {
-    const cf = CATALOG.find((c) => c.id === "cloudflare");
-    for (const metric of Object.keys(FREE_PLAN_LIMITS)) {
-      expect(
-        cf?.items.some((i) => i.match?.test(metric)),
-        metric,
-      ).toBe(true);
-    }
+  it("every item is tracked or says why not; every tracked Cloudflare limit is listed", () => {
     for (const cat of CATALOG) {
-      expect(cat.items.length).toBeGreaterThan(0);
       expect(cat.sources.every((s) => s.startsWith("https://"))).toBe(true);
       for (const item of cat.items)
         expect(item.match !== undefined || !!item.why, `${cat.id}: ${item.label}`).toBe(true);
     }
+    expect(itemFor("cloudflare", "workers.requests")?.frequency).toBe("Daily");
+    expect(itemFor("cloudflare", "r2.class_a")?.frequency).toBe("Monthly");
+    expect(itemFor("resend", "resend.emails_daily")?.frequency).toBe("Rolling 24 h");
+    expect(itemFor("supabase", "supabase.xyz.db_bytes")?.frequency).toBe("Never");
+    expect(itemFor("github", "nope")).toBeUndefined();
   });
-  it("covers every platform the collector can check, with a short name for each", () => {
-    for (const kind of [...KINDS, "cloudflare"] as const) {
-      expect(
-        CATALOG.some((c) => c.id === kind),
-        kind,
-      ).toBe(true);
-      expect(PLATFORM_NAME[kind]).toBeTruthy();
-    }
-  });
-});
-
-describe("parseClients", () => {
-  it("keeps valid clients with defaults, drops malformed ones, tolerates junk", () => {
-    expect(parseClients(undefined)).toEqual([]);
-    expect(parseClients("nope")).toEqual([]);
-    expect(parseClients('{"a":1}')).toEqual([]);
-    expect(parseClients('[{"id":"a","name":"A"},{"id":1},{"name":"x"},null]')).toEqual([
-      {
-        id: "a",
-        name: "A",
-        status: "live",
-        platforms: [],
-        accounts: [],
-        monitors: [],
-        domains: [],
-      },
-    ]);
-  });
-});
-
-describe("renderClientsPage", () => {
-  it("one row per client with email, sorted by how close each is to a limit; unmetered and unassigned are listed", () => {
-    const html = renderClientsPage(ledger());
-    const order = ["Calm Co", "Acme Books", "Beta Foods"].map((n) => html.indexOf(`>${n}</a>`));
-    expect(order.every((i) => i > 0)).toBe(true);
-    expect(order[0]).toBeLessThan(order[1] as number); // calm has an alert (paused project): broken first, before acme's 96%
-    expect(order[1]).toBeLessThan(order[2] as number); // metered before "not metered yet"
-    expect(html).toContain("owner@acme.in");
-    expect(html).toContain("96%");
-    expect(html).toContain("not metered yet");
-    expect(html).toContain("no email on file");
-    expect(html).toContain("Not in the registry"); // the stray Cloudflare account is not hidden
-    expect(html).toContain("1 alert");
-    expect(html).toContain("Blog (def) is PAUSED");
-    expect(html).toContain("Not confirmed as a live client");
-    expect(html).toContain("Platforms on file: vercel, supabase");
-    expect(html).toContain("the latest check failed");
-    expect(html).toContain("1 client has no email in the registry"); // beta (evil and calm and acme have one)
-  });
-
-  it("search finds a client by email (case-insensitive), by name or id; a single hit opens its detail; no hit says so", () => {
-    const l = ledger();
-    const byEmail = renderClientsPage(l, "OWNER@acme.in");
-    expect(byEmail).toContain("Acme Books");
-    expect(byEmail).not.toContain("Calm Co");
-    expect(byEmail).toMatch(/<details id="client-acme" open>/);
-    expect(renderClientsPage(l, "calm")).toContain("hi@calm.in");
-    expect(renderClientsPage(l, "beta")).toContain("Beta Foods");
-    const none = renderClientsPage(l, "nobody@nowhere.in");
-    expect(none).toContain("No client matches “nobody@nowhere.in”");
-    expect(none).toContain('href="/clients"'); // Clear link
-    expect(renderClientsPage(l)).not.toMatch(/<details id="client-acme" open>/); // several hits: collapsed
-  });
-
-  it("escapes everything that comes from the registry or the query", () => {
-    const html = renderClientsPage(ledger(), '"><script>x</script>');
-    expect(html).not.toContain("<script>x</script>");
-    expect(html).toContain("&lt;script&gt;x&lt;/script&gt;");
-    const all = renderClientsPage(ledger());
-    expect(all).not.toContain("<script>alert(1)</script>");
-    expect(all).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(all).not.toContain('x@y.in"><b>'); // the hostile email, raw
-    expect(all).toContain("x@y.in&quot;&gt;&lt;b&gt;");
-  });
-
-  it("groupByClient: registry clients first, then the unassigned group only when there are orphans", () => {
-    const l = ledger();
-    const groups = groupByClient(l);
-    expect(groups.map((g) => g.client.id)).toEqual(["acme", "beta", "calm", "evil", ""]);
-    l.data.providers = l.data.providers.filter((p) => p.clientId);
-    expect(groupByClient(l).map((g) => g.client.id)).toEqual(["acme", "beta", "calm", "evil"]);
-  });
-});
-
-describe("renderPlatformsPage", () => {
-  it("lists every platform's allowances with sources and as-of dates, and each client's share per tracked meter", () => {
-    const html = renderPlatformsPage(ledger());
-    for (const name of ["Cloudflare (", "GitHub (", "Resend (", "Supabase (", "Vercel ("])
-      expect(html).toContain(name);
-    expect(html).toContain("limits as of 2026-10-18");
-    expect(html).toContain('href="https://developers.cloudflare.com/workers/platform/pricing/"');
-    expect(html).toContain("Workers requests (per day)");
-    expect(html).toContain("100,000 per day");
-    expect(html).toContain("Acme Books"); // matrix column
-    expect(html).toContain("Not in the registry"); // stray account column
-    expect(html).toContain('title="96,000 of 100,000"'); // matrix cell tooltip: exact figures
-    expect(html).toContain("96%");
-    expect(html).toContain("2,000 per month"); // GitHub minutes allowance
-    expect(html).toContain("worst of 2"); // two Supabase projects under one client
-    expect(html).toContain("Not tracked here.");
-    expect(html).toContain("Dashboard only: no API token can read it on the free plan"); // Vercel / Supabase egress
-    expect(html).toContain("a paying client's site belongs on a paid plan");
-    expect(html).toContain("no client on this platform yet"); // Resend has no cards
-    expect(html).toContain("Blog (def) is PAUSED");
-    expect(html).toContain("Free-tier limits by platform");
-  });
-});
-
-describe("pages built from real ledger data", () => {
-  it("end to end: registry clients, Cloudflare rows and a stored provider reading show up on both pages", async () => {
-    const acct = "0123456789abcdef0123456789abcdef";
-    const env: Env = {
-      USAGE: createFakeD1(),
-      CF_API_TOKEN: "t",
-      CF_ACCOUNT_ID: acct,
-      CLIENTS_JSON: JSON.stringify([
-        {
-          id: "acme",
-          name: "Acme Books",
-          email: "owner@acme.in",
-          status: "live",
-          platforms: [],
-          accounts: [acct],
-        },
-      ]),
-      PROVIDERS_JSON: JSON.stringify([
-        { id: "acme", client: "Acme Books", kind: "github", token: "T", account: "acme-co" },
-      ]),
-    };
-    await upsertRows(
-      env.USAGE,
-      [{ date: "2026-10-18", product: "workers", metric: "requests", dim: "w", value: 50_000 }],
-      "t",
+  it("cycleOf: calendar rules give a date, billing-cycle and rolling ones do not, sizes never reset", () => {
+    expect(cycleOf({ frequency: "Daily", resets: "00:00 UTC" })).toBe("utc-day");
+    expect(cycleOf({ frequency: "Monthly", resets: "1st of the month, 00:00 UTC" })).toBe(
+      "utc-month",
     );
-    const reading: LimitStatus = {
-      metric: "github.actions_minutes",
-      used: 1000,
-      limit: 2000,
-      period: "month",
-      periodKey: "2026-10",
-      pct: 50,
-      level: 50,
-    };
-    await saveReadings(env.USAGE, "github:acme", [reading], "2026-10-18T10:00:00Z");
-    const l = await buildLedger(env, new Date("2026-10-18T10:30:00Z"));
-    expect(l.data.providers.map((p) => [p.platform, p.clientId])).toEqual([
-      ["cloudflare", "acme"],
-      ["github", "acme"],
+    expect(cycleOf({ frequency: "Monthly", resets: "1st of the month" })).toBe("utc-month");
+    expect(cycleOf({ frequency: "Monthly", resets: "billing cycle" })).toBe("billing");
+    expect(cycleOf({ frequency: "Rolling 24 h", resets: "x" })).toBe("rolling");
+    expect(cycleOf({ frequency: "Daily", resets: "rolling" })).toBe("billing");
+    expect(cycleOf({ frequency: "Never", resets: "a size" })).toBe("none");
+    // Nothing that claims to reset daily or monthly may fall through to "none" by accident.
+    for (const i of items)
+      if (i.frequency === "Daily" || i.frequency === "Monthly")
+        expect(cycleOf(i), i.label).not.toBe("none");
+  });
+  it("platformOf maps the registry's platform names, and ignores ones we do not monitor", () => {
+    for (const p of [
+      "cloudflare-workers",
+      "cloudflare-pages",
+      "d1",
+      "r2",
+      "kv",
+      "queues",
+      "workers-ai",
+      "durable-objects",
+    ])
+      expect(platformOf(p), p).toBe("cloudflare");
+    expect(platformOf("github-actions")).toBe("github");
+    expect(platformOf("vercel")).toBe("vercel");
+    expect(platformOf("razorpay")).toBeUndefined();
+    expect(platformOf("firebase")).toBeUndefined();
+  });
+});
+
+describe("design system shell", () => {
+  const html = shell({
+    title: "T <x>",
+    active: "consumption",
+    body: "<p>hi</p>",
+    updated: "Updated 1 min ago",
+    zone: "IST",
+  });
+  it("uses the STL brand: tokens, Inter, the real logo, glass navbar, two tabs", () => {
+    expect(html).toContain("--bg-color:#0a0a0f");
+    expect(html).toContain("--accent-primary:#6366f1");
+    expect(html).toContain("--gradient-primary:linear-gradient(135deg,#6366f1,#22d3ee)");
+    expect(html).toContain("fonts.googleapis.com/css2?family=Inter");
+    expect(html).toContain(
+      'd="M40 18C40 18 34 18 28 18C22 18 18 22 18 26C18 30 22 32 28 33C34 34 40 36 40 40C40 44 36 46 28 46C22 46 18 46 18 46"',
+    ); // logo-icon.svg
+    expect(html).toContain("backdrop-filter:blur(10px)");
+    expect(html).toContain('<a class="tab" href="/consumption" aria-current="page">');
+    expect(html).toContain('<a class="tab" href="/">');
+    expect(html).toContain("Updated 1 min ago · times in IST");
+    expect(html).toContain("T &lt;x&gt; · Free-tier monitor");
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('name="robots" content="noindex"');
+  });
+  it("is accessible: landmarks, labelled nav, focus style, reduced motion", () => {
+    expect(html).toContain('aria-label="Sections"');
+    expect(html).toContain(":focus-visible");
+    expect(html).toContain("prefers-reduced-motion");
+    expect(html).toContain("<main>");
+    expect(html).toContain("<footer>");
+  });
+});
+
+describe("tab 1: free-tier limits", () => {
+  it("lists every limit of every platform in one filterable table", () => {
+    const html = renderLimitsPage(data());
+    expect(count(html, /<tr data-platform="/g)).toBe(items.length);
+    for (const c of CATALOG) expect(html).toContain(`data-chip="${c.id}"`);
+    for (const id of ["q", "cat", "freq", "trk", "reset", "count", "none", "limits"])
+      expect(html).toContain(`id="${id}"`);
+    expect(html).toContain('data-tracked="1"');
+    expect(html).toContain('data-tracked="0"');
+    expect(html).toContain('data-category="Database"');
+    expect(html).toContain('data-freq="Rolling 24 h"');
+    expect(html).toMatch(/<option value="Builds">Builds<\/option>/);
+    expect(html).toContain("Free-tier limits · Free-tier monitor");
+    expect(html).toContain('aria-current="page">');
+    expect(html).toContain("Tracked live");
+    expect(html).toContain("Not tracked");
+    expect(html).toContain("Daily reset");
+    expect(html).toContain("05:30 IST"); // 00:00 UTC is 05:30 in IST
+    expect(html).toContain("00:00 UTC, every day");
+    expect(html).toContain("Dashboard only: no API token can read it on the free plan");
+  });
+
+  it("shows when each calendar-based limit next resets, exactly, in IST with UTC on hover", () => {
+    const html = renderLimitsPage(data());
+    expect(html).toContain('<span title="19 Oct 2026, 00:00 UTC">19 Oct 2026, 05:30 IST</span>'); // daily at 00:00 UTC
+    expect(html).toContain('<span title="1 Nov 2026, 00:00 UTC">1 Nov 2026, 05:30 IST</span>'); // monthly on the 1st
+    const utc = renderLimitsPage(data({ tz: "UTC" }));
+    expect(utc).toContain("19 Oct 2026, 00:00 UTC</span>");
+    expect(utc).toContain("times in UTC");
+  });
+
+  it("empty change history says what is watched; check badges show the last runs", () => {
+    const html = renderLimitsPage(data());
+    expect(html).toContain("No change detected yet");
+    expect(html).toContain("Terms watch: no changes · 8 h ago");
+    expect(html).toContain("Limits vs docs: changed · 7 h ago"); // 7.48 h
+    const none = renderLimitsPage(data({ runs: [] }));
+    expect(none).toContain("Terms watch: not run yet");
+  });
+
+  it("change history: platform badge, headline, and the exact lines coloured; only terms and drift entries", () => {
+    const report =
+      "===\n01. CHANGED: Vercel · limits (https://vercel.com/docs/limits)\n===\n--- @ old\n+++ @ new\n@@ -1 +1 @@\n-Fast Data Transfer 100 GB\n+Fast Data Transfer 50 GB <b>";
+    const html = renderLimitsPage(
+      data({
+        alerts: [
+          { at: "2026-10-18T03:31:00Z", source: "terms", text: report },
+          {
+            at: "2026-10-17T03:31:00Z",
+            source: "drift",
+            text: "DRIFT kv.write: docs say 500/day, limits.ts has 1,000/day",
+          },
+          {
+            at: "2026-10-18T10:00:00Z",
+            source: "usage",
+            text: "usage alert that is not a limit change",
+          },
+        ],
+      }),
+    );
+    expect(count(html, /<article class="event"/g)).toBe(2);
+    expect(html).toContain("01. CHANGED: Vercel · limits (https://vercel.com/docs/limits)");
+    expect(html).toContain('<span class="add">+Fast Data Transfer 50 GB &lt;b&gt;</span>'); // escaped
+    expect(html).toContain('<span class="del">-Fast Data Transfer 100 GB</span>');
+    expect(html).toContain('<span class="hunk">@@ -1 +1 @@</span>');
+    expect(html).not.toContain('class="add">+++'); // file header lines are not additions
+    expect(html).toContain("Free-tier terms");
+    expect(html).toContain("Limits vs docs");
+    expect(html).toContain("DRIFT kv.write");
+    expect(html).not.toContain("usage alert that is not a limit change");
+    expect(html).toContain("19 Oct 2026"); // not here: shown in IST as 18 Oct 09:01
+    expect(html).toContain("18 Oct 2026, 09:01 IST");
+  });
+
+  it("sources: every platform with its plan, as-of date, provenance and links", () => {
+    const html = renderLimitsPage(data());
+    expect(html).toContain("Where these numbers come from");
+    expect(html).toContain('href="https://developers.cloudflare.com/workers/platform/pricing/"');
+    expect(html).toContain("free-tier-maxxer");
+    expect(html).toContain("as of 2026-10-11");
+  });
+});
+
+describe("tab 2: consumption", () => {
+  it("accountsOf groups clients by owner email, alphabetical, no-email last; shared emails group together", () => {
+    const a = accountsOf(data().ledger);
+    expect(a.map((x) => x.email)).toEqual(
+      ['x@y.in"><b>', "owner@acme.in", "shared@stl.in", ""].sort((p, q) =>
+        p === "" ? 1 : q === "" ? -1 : p.localeCompare(q),
+      ),
+    );
+    expect(a.find((x) => x.email === "shared@stl.in")?.clients.map((c) => c.name)).toEqual([
+      "Shared Site",
+      "Shared App",
     ]);
-    const clients = renderClientsPage(l, "owner@acme.in");
-    expect(clients).toContain("50%");
-    expect(clients).toContain("Workers requests (per day)");
-    expect(renderPlatformsPage(l)).toContain("Acme Books");
+  });
+
+  it("sidebar: collapsible, every email with its project count, selected one marked, attention dot", () => {
+    const html = renderConsumptionPage(data(), "owner@acme.in");
+    expect(html).toContain('id="accounts"');
+    expect(html).toContain("data-sidebar-toggle");
+    expect(html).toContain('aria-controls="accounts"');
+    expect(html).toContain('aria-label="Collapse the account list"');
+    expect(html).toContain('href="/consumption?email=owner%40acme.in" aria-current="page"');
+    expect(html).toContain('href="/consumption?email=shared%40stl.in"');
+    expect(html).toContain('href="/consumption?email=none"');
+    expect(html).toContain("No email on file");
+    expect(html).toContain("2 projects"); // shared@stl.in
+    expect(html).toContain("1 project");
+    expect(html).toContain('class="dot"'); // acme has a site down, a paused project and usage at 96%
+  });
+
+  it("picking an email shows its platforms in a fixed order with consumption, exact reset time and frequency", () => {
+    const html = renderConsumptionPage(data(), "owner@acme.in");
+    const order = ["Cloudflare", "Vercel", "Resend", "GitHub", "Supabase"].map((p) =>
+      html.indexOf(`<h2>${p}</h2>`),
+    );
+    expect(order.every((i) => i > 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(html).toContain('96,000 <span class="muted">of 100,000</span>');
+    expect(html).toContain("96%");
+    expect(html).toContain(
+      'title="19 Oct 2026, 00:00 UTC"><div class="d">19 Oct 2026</div><div class="t">05:30 IST · in 13 h</div>',
+    ); // Cloudflare daily
+    expect(html).toContain("in 13 h");
+    expect(html).toContain(
+      'title="19 Oct 2026, 09:30 UTC"><div class="d">19 Oct 2026</div><div class="t">15:00 IST · in 23 h</div>',
+    ); // Resend: time from the API
+    expect(html).toContain(
+      'title="1 Nov 2026, 00:00 UTC"><div class="d">1 Nov 2026</div><div class="t">05:30 IST · in 14 days</div>',
+    ); // GitHub monthly
+    expect(html).toContain("1,500 min");
+    expect(html).toContain(">Daily</span>");
+    expect(html).toContain(">Monthly</span>");
+    expect(html).toContain(">Rolling 24 h</span>");
+    expect(html).toContain(">Never</span>"); // sizes
+    expect(html).toContain("a size, not a quota");
+    expect(html).toContain("approximate");
+    expect(html).toContain("the latest check failed");
+    expect(html).toContain("Blog (def) is PAUSED");
+  });
+
+  it("a platform on file but not connected says so and why, and still lists what the plan includes", () => {
+    const html = renderConsumptionPage(data(), "owner@acme.in");
+    expect(html).toContain("Not connected");
+    expect(html).toContain("Vercel's Hobby plan"); // apostrophes are not escaped
+    // Collapsed by default, so the list of what the plan includes cannot push real data off the page.
+    expect(html).toMatch(/<details[^>]*><summary>[^]*?What the free plan includes \(11 limits\)/);
+    expect(html).not.toMatch(/<details open/);
+    expect(html).toContain("Fast Data Transfer");
+    expect(html).toContain("100 GB / month");
+    expect(html).toContain("Date not exposed by Vercel");
+    expect(html).toContain("Also uses razorpay, which are not monitored");
+    expect(html).toContain(
+      "Other limits on this plan that can&#39;t be measured".replace("&#39;", "'"),
+    );
+  });
+
+  it("status strip: sites down, domain expiry in IST, highest usage; details list every site and domain", () => {
+    const html = renderConsumptionPage(data(), "owner@acme.in");
+    expect(html).toContain("1 down");
+    expect(html).toContain("acme.in");
+    expect(html).toContain("82 days");
+    expect(html).toContain("9 Jan 2027, 05:30 IST");
+    expect(html).toContain("Highest usage");
+    expect(html).toContain("Workers requests · Cloudflare");
+    expect(html).toContain("Keyword missing");
+    expect(html).toContain("123 ms");
+    expect(html).toContain("Sites and domains");
+    expect(html).toContain("domain registration");
+    const ok = renderConsumptionPage(data(), "shared@stl.in");
+    expect(ok).toContain("1/1 up");
+    expect(ok).not.toContain("1 down");
+  });
+
+  it("uptime unavailable, domain not looked up, domain expiring soon and expired are all explicit", () => {
+    const d = data();
+    expect(
+      renderConsumptionPage({ ...d, health: { ...d.health, uptime: null } }, "owner@acme.in"),
+    ).toContain("Uptime is unavailable right now");
+    expect(
+      renderConsumptionPage({ ...d, health: { ...d.health, domains: [] } }, "owner@acme.in"),
+    ).toContain("not looked up yet");
+    const at = (iso: string | null, error: string | null = null) => ({
+      ...d,
+      health: {
+        ...d.health,
+        domains: [{ domain: "acme.in", expires: iso, error, checkedAt: NOW.toISOString() }],
+      },
+    });
+    expect(renderConsumptionPage(at("2026-11-01T00:00:00.000Z"), "owner@acme.in")).toContain(
+      "expires soon",
+    );
+    expect(renderConsumptionPage(at("2026-10-01T00:00:00.000Z"), "owner@acme.in")).toContain(
+      "expired",
+    );
+    expect(renderConsumptionPage(at(null, "RDAP HTTP 503"), "owner@acme.in")).toContain(
+      "lookup failed",
+    );
+  });
+
+  it("selection: email in any case, 'none' for clients without one, unknown or empty falls back to what needs attention", () => {
+    const d = data();
+    expect(renderConsumptionPage(d, "OWNER@ACME.IN")).toMatch(/<h1>owner@acme\.in<\/h1>/);
+    expect(renderConsumptionPage(d, "none")).toContain("<h1>No email on file</h1>");
+    expect(renderConsumptionPage(d, "none")).toContain("Beta Foods");
+    expect(renderConsumptionPage(d, "none")).toContain("unconfirmed");
+    expect(renderConsumptionPage(d, "nobody@x.in")).toMatch(/<h1>(owner@acme\.in|x@y\.in)/);
+    expect(renderConsumptionPage(d, "")).toContain("<h1>");
+    const shared = renderConsumptionPage(d, "shared@stl.in");
+    expect(shared).toContain("Shared Site");
+    expect(shared).toContain("Shared App");
+  });
+
+  it("escapes everything that comes from the registry", () => {
+    const html = renderConsumptionPage(data(), 'x@y.in"><b>');
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).not.toContain('x@y.in"><b>');
+    expect(html).toContain("x@y.in&quot;&gt;&lt;b&gt;");
+  });
+
+  it("no clients at all: a plain empty state, not an error", () => {
+    const d = data();
+    d.ledger.data.clients = [];
+    d.ledger.data.providers = [];
+    expect(renderConsumptionPage(d)).toContain("No clients in the registry yet");
+  });
+
+  it("an owner with nothing connected still lists the platforms on file", () => {
+    const d = data();
+    d.ledger.data.providers = [];
+    const html = renderConsumptionPage(d, "owner@acme.in");
+    expect(html).toContain("Not connected");
+    expect(html).toContain("No Cloudflare account is linked");
+    expect(html).toContain("Nothing connected yet");
   });
 });

@@ -152,6 +152,9 @@ async function github(
 interface Quota {
   used?: number;
   limit?: number | null;
+  /** Resend: when this quota resets (emails, automation runs) or, for AI credits, when it next increases. */
+  resets_at?: string;
+  next_increase_at?: string;
 }
 type ResendUsage = { object?: string; emails?: { daily?: Quota; monthly?: Quota } } & Record<
   string,
@@ -187,7 +190,13 @@ async function resend(
   }
   return quotas
     .filter(([, q]) => typeof q?.limit === "number" && q.limit > 0)
-    .map(([m, q, p]) => toStatus(m, q?.used ?? 0, q?.limit as number, p, today, levels))
+    .map(([m, q, p]) => {
+      const status = toStatus(m, q?.used ?? 0, q?.limit as number, p, today, levels);
+      const at = q?.resets_at ?? q?.next_increase_at;
+      return at && !Number.isNaN(Date.parse(at))
+        ? { ...status, resetsAt: new Date(at).toISOString() }
+        : status;
+    })
     .sort((a, b) => a.metric.localeCompare(b.metric));
 }
 

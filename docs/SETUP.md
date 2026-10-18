@@ -78,22 +78,23 @@ gh workflow run "Free-tier terms watch" --repo <owner>/max-free-tier   # records
 ```
 The uptime job's summary shows the status page URL.
 
-## 7. The overview page (off until you set a password)
-`https://max-free-tier-usage.<your-subdomain>.workers.dev/` shows every client against every free limit: what runs out
-first, per-meter bars, daily history and projections (adapted from
-[free-tier-maxxer](https://github.com/alemalvarez/free-tier-maxxer)). It lists every client's usage, so the Worker
-answers **404 until you set the `DASHBOARD_PASSWORD` secret**, then requires it (HTTP Basic, any username):
+## 7. The site (off until you set a password)
+`https://max-free-tier-usage.<your-subdomain>.workers.dev/` has two tabs. **Free-tier limits** lists every platform's
+allowances (filter by platform, category, how it resets) and every change we detect to them. **Consumption** has a
+collapsible list of owner emails (the `email:` of each client in the registry); pick one to see its platforms, each
+meter's consumption, the exact next reset and how often it resets, plus sites up/down (read live from the uptime Worker
+through a service binding, so there is no second login) and domain expiry. Times show in the registry's
+`org.timeZone` (IST by default), UTC on hover.
+
+It lists every client's usage, so the Worker answers **404 until you set the `DASHBOARD_PASSWORD` secret**, then requires
+it (HTTP Basic, any username). No Cloudflare Access / Zero Trust is needed:
 ```bash
 gh secret set DASHBOARD_PASSWORD --repo $R   # a long random value; redeploy to apply
 ```
-Five views: `/` (what runs out first, with charts), `/clients` (one row per client, found by the `email:` in the
-registry: sites up or down, domain expiry and every meter), `/activity` (when each check last ran, and one timeline of
-every alert and outage), `/platforms` (every free allowance per platform with its source, and each client's share),
-and `/classic` (the original 7-day table with spike detection). No Cloudflare Access / Zero Trust is needed. Uptime comes from FlareWatch through a service binding (no second login).
-To also see the daily free-tier terms watch and limits check on `/activity`, set the same random `INGEST_TOKEN` secret in
-both repos and the repository variable `INGEST_URL` (`https://max-free-tier-usage.<subdomain>.workers.dev/ingest`) in the
-repo that runs the terms watch. The FlareWatch
-status page is private behind its own password.
+To show the daily free-tier terms watch and limits check in the change history, set the same random `INGEST_TOKEN`
+secret in both repos and the repository variable `INGEST_URL`
+(`https://max-free-tier-usage.<subdomain>.workers.dev/ingest`) in the repo that runs the terms watch.
+`/classic` keeps the original 7-day table with spike detection.
 
 ## 8. Also turn on (no code)
 - In each client's Cloudflare account → Notifications: Workers usage notifications. D1 limit emails are automatic.

@@ -19,7 +19,7 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 1. **Find it** in the private registry: platforms, Cloudflare account, repos, `local:` folder. Read that project's docs.
 2. **Down or broken?** Status page / Telegram alert text (status code, missing keyword, SSL/domain warning).
    Reproduce: `curl -sS -o /dev/null -w '%{http_code}' <url>`.
-3. **Free-tier limit?** The overview page (usage Worker: `/` overview, `/clients` by email, `/platforms` allowances + per-client share, `/classic` spikes; needs DASHBOARD_PASSWORD) or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
+3. **Free-tier limit?** The site (usage Worker: `/` Free-tier limits + change history, `/consumption?email=` per owner, `/classic` spikes; needs DASHBOARD_PASSWORD) or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
    (`usage/src/limits.ts` has the cited numbers).
 4. **Logs:** Cloudflare → Workers & Pages → the Worker → Logs, or `npx wrangler tail` in the project.
 5. **Not on Cloudflare** (Vercel, Supabase, Firebase, Resend, GitHub Actions): clients with a registry `usage:` block

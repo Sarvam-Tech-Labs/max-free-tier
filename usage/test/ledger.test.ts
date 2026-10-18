@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { authorized } from "../src/auth";
 import type { Env } from "../src/env";
-import { buildLedger, dataJs, labelFor, STALE_AFTER_MS, seriesJs } from "../src/ledger";
+import { buildLedger, labelFor, STALE_AFTER_MS } from "../src/ledger";
 import type { LimitStatus } from "../src/limits";
 import { saveReadings, upsertRows } from "../src/store";
 import { createFakeD1 } from "./helpers/fake-d1";
@@ -31,9 +31,9 @@ const status = (
 
 describe("labelFor", () => {
   it("names known meters, Supabase per project, and falls back to a readable name", () => {
-    expect(labelFor("workers.requests")).toBe("Workers requests (per day)");
+    expect(labelFor("workers.requests")).toBe("Workers requests");
     expect(labelFor("github.actions_minutes")).toContain("Actions minutes");
-    expect(labelFor("resend.emails_daily")).toBe("Emails (per day)");
+    expect(labelFor("resend.emails_daily")).toBe("Emails per day");
     expect(labelFor("supabase.abc.db_bytes")).toBe("Database size · abc");
     expect(labelFor("supabase.abc.storage_bytes")).toBe("File storage · abc");
     expect(labelFor("resend.automation_runs")).toBe("Automation runs");
@@ -42,7 +42,7 @@ describe("labelFor", () => {
 });
 
 describe("buildLedger · Cloudflare", () => {
-  it("one account: every limit as a meter (0 when unused), daily vs monthly periods, series for known metrics", async () => {
+  it("one account: every limit as a meter (0 when unused), daily vs monthly resets", async () => {
     const e = env({ ACCOUNT_LABELS_JSON: JSON.stringify({ [ACCT]: "Acme" }) });
     await upsertRows(
       e.USAGE,
@@ -54,7 +54,7 @@ describe("buildLedger · Cloudflare", () => {
       ],
       "2026-10-18T10:00:00Z",
     );
-    const { data, series } = await buildLedger(e, NOW);
+    const { data } = await buildLedger(e, NOW);
     expect(data.generatedAt).toBe("2026-10-18T10:30:00.000Z");
     expect(data.project).toBe("max-free-tier");
     const [cf] = data.providers;
@@ -69,16 +69,12 @@ describe("buildLedger · Cloudflare", () => {
     });
     expect(m("workers.requests")?.period?.start).toBe("2026-10-18T00:00:00.000Z");
     expect(m("workers.requests")?.period?.end).toBe("2026-10-19T00:00:00.000Z");
+    expect(m("workers.requests")?.resetsAt).toBe("2026-10-19T00:00:00.000Z"); // next UTC midnight
     expect(m("r2.class_a")?.used).toBe(300_000); // month to date, not just today
     expect(m("r2.class_a")?.period?.start).toBe("2026-10-01T00:00:00.000Z");
     expect(m("r2.class_a")?.period?.end).toBe("2026-11-01T00:00:00.000Z");
+    expect(m("r2.class_a")?.resetsAt).toBe("2026-11-01T00:00:00.000Z"); // 1st of next month
     expect(m("kv.read")?.used).toBe(0);
-    expect(series.filter((s) => s.metric === "r2.class_a").map((s) => s.date)).toEqual([
-      "2026-10-02",
-      "2026-10-18",
-    ]);
-    expect(series.some((s) => s.metric === "mystery.thing")).toBe(false);
-    expect(series[0]).toMatchObject({ provider: cf?.id, kind: "delta" });
   });
 
   it("several accounts: separate cards keyed by account; unlabelled single account is plain 'Cloudflare'", async () => {
@@ -161,8 +157,7 @@ describe("buildLedger · other platforms", () => {
       t,
     );
 
-    const { data, series } = await buildLedger(e, NOW);
-    expect(series).toEqual([]);
+    const { data } = await buildLedger(e, NOW);
     expect(data.providers.map((p) => p.name)).toEqual([
       "Acme · GitHub",
       "Acme · Supabase",
@@ -193,7 +188,30 @@ describe("buildLedger · other platforms", () => {
     expect(sb?.status).toEqual({ label: "Alert", value: "Blog (def) is PAUSED" });
 
     expect(rs?.metrics[0]?.period?.end).toBe("2026-10-19T00:00:00.000Z"); // daily quota
+    expect(rs?.metrics[0]?.resetsAt).toBe("2026-10-19T00:00:00.000Z"); // no API time stored → the calendar rule
+    expect(sb?.metrics[0]?.resetsAt).toBeUndefined(); // sizes never reset
     expect(rs?.auth).toContain("full-access");
+  });
+
+  it("a reset time stored from the platform's API becomes the meter's exact reset; without one the calendar rule applies", async () => {
+    const e = env({ CF_ACCOUNT_ID: undefined, PROVIDERS_JSON: targets });
+    await saveReadings(
+      e.USAGE,
+      "resend:acme",
+      [
+        status("resend.emails_daily", 20, 100, {
+          period: "day",
+          resetsAt: "2026-10-19T09:30:00.000Z",
+        }),
+        status("resend.domains", 1, 3),
+      ],
+      "2026-10-18T10:00:00Z",
+    );
+    const { data } = await buildLedger(e, NOW);
+    const [rs] = data.providers;
+    const at = (k: string) => rs?.metrics.find((m) => m.key === k)?.resetsAt;
+    expect(at("resend.emails_daily")).toBe("2026-10-19T09:30:00.000Z");
+    expect(at("resend.domains")).toBe("2026-11-01T00:00:00.000Z");
   });
 
   it("a reading older than the stale window carries a note; a fresh one does not", async () => {
@@ -235,14 +253,6 @@ describe("buildLedger · other platforms", () => {
     const { data } = await buildLedger(e, NOW);
     expect(data.providers[0]?.metrics).toHaveLength(1);
     expect(data.providers[0]?.metrics[0]?.used).toBe(2);
-  });
-});
-
-describe("dataJs / seriesJs", () => {
-  it("emit assignments the dashboard page loads", async () => {
-    const l = await buildLedger(env(), NOW);
-    expect(dataJs(l)).toMatch(/^window\.FTM_DATA = \{.*\};\n$/s);
-    expect(seriesJs(l)).toBe("window.FTM_SERIES = [];\n");
   });
 });
 

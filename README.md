@@ -52,11 +52,15 @@ Every day a second job also compares our hardcoded Cloudflare free-plan numbers 
 posts to Telegram on any difference — or when a docs table changed shape and can no longer be read — so alerts never
 silently use a stale limit. (Other platforms publish HTML only and stay on the diff-only watch.)
 
-One password-protected website for everything — uptime, domain expiry, free-tier usage, free-tier changes and an
-activity timeline. Views: **overview** (what runs out first, bars, daily history and projections —
-adapted from free-tier-maxxer's dashboard), **by client** (each client found by email, with every meter),
-**by platform** (every free allowance with its source, and each client's share of it) , **activity** (when every check last ran, every alert and outage) and the original 7-day table. Telegram only pushes
-the alerts; the site is where you look.
+One password-protected website, two tabs, in the Sarvam Tech Labs design system:
+
+- **Free-tier limits** — every platform's allowances in one filterable table (by platform, category, how it resets), the
+  exact next reset, and the history of every change we detect to the free tiers, with the exact lines.
+- **Consumption** — a collapsible sidebar of owner emails. Pick one to see all their platforms (Cloudflare, Vercel,
+  Resend, GitHub, Supabase), how much of each limit is consumed, the exact date and time it resets (IST, UTC on hover) and
+  how often it resets, plus whether their sites are up and when their domains expire.
+
+Telegram only pushes alerts to your phone; the site is where you look.
 
 Not covered, because Vercel Hobby and Supabase Free show them only in their logged-in dashboards (no API token can
 read them): Vercel bandwidth / requests / invocations, Supabase egress / realtime / edge invocations. Their own
@@ -66,7 +70,8 @@ warning emails remain the signal there.
 
 - [free-tier-maxxer](https://github.com/alemalvarez/free-tier-maxxer) — a local dashboard of one person's own free-tier
   usage (GitHub, PostHog, Langfuse, Supabase, Vercel, Resend), including browser-session captures for the numbers above.
-  Use it for a single side project; use max-free-tier for many client accounts with unattended alerts.
+  Use it for a single side project; use max-free-tier for many client accounts with unattended alerts. Its research of
+  which API reports what (and what free plans hide) informed our platform checks.
 
 ## Develop
 

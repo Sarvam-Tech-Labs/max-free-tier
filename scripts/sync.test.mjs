@@ -68,11 +68,14 @@ test("usage config watches every non-paused Cloudflare account, labelled, hourly
   assert.equal(cfg.vars.LIMIT_LEVELS, "50,80,95");
   assert.deepEqual(cfg.triggers.crons, ["0 * * * *"]);
   assert.equal(cfg.compatibility_date, "2026-09-01");
-  // The overview page: served from public/ through the Worker (which enforces the password), no preview URLs.
+  // The site is served by the Worker itself (which enforces the password): no assets binding, no preview URLs.
   assert.equal(cfg.preview_urls, false);
-  assert.deepEqual(cfg.assets, { directory: "public", binding: "ASSETS", run_worker_first: true, html_handling: "none" });
+  assert.equal(cfg.assets, undefined);
   assert.equal(cfg.vars.ORG_NAME, "max-free-tier");
-  assert.equal(usageConfig(clients, '{ "compatibility_date": "2026-09-01" }', { name: "Acme Agency" }).vars.ORG_NAME, "Acme Agency");
+  assert.equal(cfg.vars.TIME_ZONE, "UTC");
+  const named = usageConfig(clients, '{ "compatibility_date": "2026-09-01" }', { name: "Acme Agency", timeZone: "Asia/Kolkata" });
+  assert.equal(named.vars.ORG_NAME, "Acme Agency");
+  assert.equal(named.vars.TIME_ZONE, "Asia/Kolkata");
   assert.throws(() => usageConfig(clients, "{}"), /compatibility_date not found/);
 });
 

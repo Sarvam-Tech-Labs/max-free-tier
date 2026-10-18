@@ -4,7 +4,8 @@
 #
 # Validate this file:  node scripts/sync.mjs --registry clients.example.yaml --dry-run
 #
-# email: the client's email. It identifies them on the overview page (search /clients by email). Several clients may share one email (an owner with several sites).
+# email: the client's email. The Consumption tab lists owner emails in its sidebar and shows each owner's platforms.
+#        Several clients may share one email (an owner with several sites); clients with none are grouped together.
 # status: live = monitored and on alerts · unconfirmed = recorded so it is findable, not monitored · paused = keep the
 #         record, stop monitoring.
 # cloudflare.account_id: the client's own account (your team is a member). The usage collector reads every listed
@@ -25,7 +26,7 @@
 # local: where the project lives on the team's machine (optional; used by the runbook in CLAUDE.md).
 # No secrets in a registry — tokens live in GitHub Actions secrets / Worker secrets.
 
-# Optional: names the status page and the overview page, and sets the time zone used in alert messages.
+# Optional: names the status page and the site, and sets the time zone for alert messages and every time on the site.
 # watchdog: a dead-man's-switch URL OUTSIDE Cloudflare (e.g. a free Healthchecks.io check, period 1 min, grace 5 min)
 #           that FlareWatch requests every minute. When FlareWatch or Cloudflare goes down the requests stop and that
 #           service alerts you — the one failure FlareWatch cannot report itself.
@@ -38,7 +39,7 @@ org:
 clients:
   - id: acme
     name: Acme Books
-    email: owner@acme.example # identifies the client on the overview page (/clients, searchable); unique, optional
+    email: owner@acme.example # groups this client under its owner in the Consumption tab; optional
     status: live
     platforms: [cloudflare-workers, cloudflare-pages, d1, r2, resend]
     cloudflare:

@@ -191,46 +191,60 @@ describe("renderIndex / fetch handler", () => {
     passThroughOnException: vi.fn(),
     props: {},
   } as unknown as ExecutionContext;
-  const assets = {
-    fetch: vi.fn(
-      async (r: Request) => new Response(`<html>overview ${new URL(r.url).pathname}</html>`),
-    ),
-  } as unknown as Fetcher;
+  const ACCT = "0123456789abcdef0123456789abcdef";
 
-  it("without DASHBOARD_PASSWORD every path is 404, even with credentials", async () => {
-    const e = env({ ASSETS: assets });
-    for (const path of ["/", "/data.js", "/classic"]) {
+  it("without DASHBOARD_PASSWORD every page is 404, even with credentials", async () => {
+    const e = env();
+    for (const path of ["/", "/consumption", "/classic"]) {
       expect((await worker.fetch(new Request(`https://x.test${path}`), e, ctx)).status).toBe(404);
       const withAuth = new Request(`https://x.test${path}`, { headers: basic("") });
       expect((await worker.fetch(withAuth, e, ctx)).status).toBe(404);
     }
   });
 
-  it("with it: no or wrong credentials → 401 + challenge; POST → 404", async () => {
-    const e = env({ DASHBOARD_PASSWORD: PASSWORD, ASSETS: assets });
+  it("with it: no or wrong credentials → 401 + challenge on every page; POST elsewhere → 404", async () => {
+    const e = env({ DASHBOARD_PASSWORD: PASSWORD });
     const bad = [
       {},
       basic("wrong"),
       { Authorization: "Basic !!!not-base64" },
       { Authorization: "Bearer x" },
     ];
-    for (const headers of bad) {
-      const res = await worker.fetch(new Request("https://x.test/", { headers }), e, ctx);
-      expect(res.status).toBe(401);
-      expect(res.headers.get("WWW-Authenticate")).toContain("Basic");
+    for (const path of ["/", "/consumption", "/classic"]) {
+      for (const headers of bad) {
+        const res = await worker.fetch(new Request(`https://x.test${path}`, { headers }), e, ctx);
+        expect(res.status).toBe(401);
+        expect(res.headers.get("WWW-Authenticate")).toContain("Basic");
+      }
     }
     const post = new Request("https://x.test/", { method: "POST", headers: basic(PASSWORD) });
     expect((await worker.fetch(post, e, ctx)).status).toBe(404);
   });
 
-  it("with the right password: / serves the overview, /data.js + /series.js the readings, /classic the table", async () => {
+  it("with the right password: / is the limits tab, /consumption the consumption tab, /classic the raw table", async () => {
     // The handler uses the real clock; pin it so the 7-day window still covers the fixture row.
     vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
-    const e = env({ DASHBOARD_PASSWORD: PASSWORD, ASSETS: assets, ORG_NAME: "Acme Agency" });
+    const e = env({
+      DASHBOARD_PASSWORD: PASSWORD,
+      CF_ACCOUNT_ID: ACCT,
+      CLIENTS_JSON: JSON.stringify([
+        {
+          id: "acme",
+          name: "Acme Books",
+          email: "owner@acme.in",
+          status: "live",
+          platforms: ["cloudflare-workers"],
+          accounts: [ACCT],
+          monitors: [],
+          domains: [],
+        },
+      ]),
+    });
     await upsertRows(
       e.USAGE,
       [{ date: "2026-09-14", product: "kv", metric: "read", dim: "ns", value: 12 }],
       "2026-09-14T01:00:00Z",
+      "",
     );
     const get = (path: string) =>
       worker.fetch(new Request(`https://x.test${path}`, { headers: basic(PASSWORD) }), e, ctx);
@@ -239,47 +253,45 @@ describe("renderIndex / fetch handler", () => {
     expect(home.status).toBe(200);
     expect(home.headers.get("Content-Type")).toContain("text/html");
     expect(home.headers.get("Cache-Control")).toBe("no-store");
-    expect(await home.text()).toContain("overview /index.html");
+    const homeHtml = await home.text();
+    expect(homeHtml).toContain("<h1>Free-tier limits</h1>");
+    expect(homeHtml).toContain("Workers requests");
 
-    const data = await get("/data.js");
-    expect(data.headers.get("Content-Type")).toContain("javascript");
-    expect(data.headers.get("Cache-Control")).toBe("no-store");
-    const body = await data.text();
-    expect(body.startsWith("window.FTM_DATA = ")).toBe(true);
-    expect(body).toContain("Acme Agency");
-    expect(body).toContain("Workers requests");
-
-    const series = await (await get("/series.js")).text();
-    expect(series).toContain("window.FTM_SERIES = ");
-    expect(series).toContain("kv.read");
+    const consumption = await get("/consumption?email=owner%40acme.in");
+    expect(consumption.status).toBe(200);
+    expect(consumption.headers.get("Cache-Control")).toBe("no-store");
+    const html = await consumption.text();
+    expect(html).toContain("<h1>owner@acme.in</h1>");
+    expect(html).toContain("Acme Books");
+    expect(html).toContain(
+      'title="15 Sep 2026, 00:00 UTC"><div class="d">15 Sep 2026</div><div class="t">05:30 IST',
+    ); // next UTC midnight after the pinned 14 Sep, shown in the default zone (IST)
+    expect(html).toContain("<h2>Cloudflare</h2>");
 
     const classic = await get("/classic");
     expect(classic.status).toBe(200);
-    const html = await classic.text();
-    expect(html).toContain("<code>kv.read</code>");
-    expect(html).toContain("Last collected 2026-09-14T01:00:00Z");
-
-    const clients = await get("/clients?q=zzz");
-    expect(clients.status).toBe(200);
-    expect(clients.headers.get("Cache-Control")).toBe("no-store");
-    expect(await clients.text()).toContain("No client matches “zzz”");
-    const platforms = await get("/platforms");
-    expect(platforms.status).toBe(200);
-    expect(await platforms.text()).toContain("Free-tier limits by platform");
-    for (const path of ["/clients", "/platforms"]) {
-      const anon = await worker.fetch(new Request(`https://x.test${path}`), e, ctx);
-      expect(anon.status).toBe(401); // the new pages are behind the same password
-    }
+    expect(await classic.text()).toContain("<code>kv.read</code>");
 
     expect((await get("/other")).status).toBe(404);
-    // No ASSETS binding → the overview page cannot be served.
-    const noAssets = env({ DASHBOARD_PASSWORD: PASSWORD });
-    const res = await worker.fetch(
-      new Request("https://x.test/", { headers: basic(PASSWORD) }),
-      noAssets,
-      ctx,
-    );
-    expect(res.status).toBe(404);
+    expect((await get("/clients")).status).toBe(404); // the old pages are gone
+    expect((await get("/data.js")).status).toBe(404);
+  });
+
+  it("TIME_ZONE sets every displayed time; a typo falls back to IST", async () => {
+    vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
+    const base = { DASHBOARD_PASSWORD: PASSWORD, CF_ACCOUNT_ID: ACCT };
+    const page = async (tz: string | undefined) => {
+      const e = env({ ...base, ...(tz ? { TIME_ZONE: tz } : {}) });
+      const res = await worker.fetch(
+        new Request("https://x.test/", { headers: basic(PASSWORD) }),
+        e,
+        ctx,
+      );
+      return res.text();
+    };
+    expect(await page("UTC")).toContain("times in UTC");
+    expect(await page("Not/AZone")).toContain("times in IST");
+    expect(await page(undefined)).toContain("times in IST");
   });
 
   it("scheduled() runs the collect via waitUntil and logs a summary without the token", async () => {

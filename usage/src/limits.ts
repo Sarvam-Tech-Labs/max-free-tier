@@ -83,6 +83,8 @@ export interface LimitStatus {
   level: number | null;
   /** A state problem rather than a percentage (e.g. "project is paused"); replaces the numbers in the alert. */
   note?: string;
+  /** When this quota next resets, if the platform's API says so (ISO). Otherwise the calendar rule applies. */
+  resetsAt?: string;
 }
 
 /**

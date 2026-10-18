@@ -22,9 +22,9 @@ export interface Env {
   MONITOR_WORKER?: Fetcher;
   /** Secret. Bearer token the daily GitHub Actions jobs use to POST their results to /ingest. Unset = /ingest is 404. */
   INGEST_TOKEN?: string;
-  /** Static assets binding serving public/index.html (the overview page). */
-  ASSETS?: Fetcher;
-  /** JSON array of the registry's clients (id, name, email, status, platforms, Cloudflare accounts) for the by-client page. */
+  /** IANA time zone for every time on the site (the registry's org.timeZone). Default Asia/Kolkata. */
+  TIME_ZONE?: string;
+  /** JSON array of the registry's clients (id, name, email, status, platforms, Cloudflare accounts, sites) for the Consumption tab. */
   CLIENTS_JSON?: string;
   /** Shown in the overview page's title. */
   ORG_NAME?: string;

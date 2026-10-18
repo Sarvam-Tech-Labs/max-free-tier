@@ -141,6 +141,27 @@ describe("checkTarget", () => {
     ]);
   });
 
+  it("resend: the reset time comes from the API (resets_at, or next_increase_at for AI credits); an unusable one is ignored", async () => {
+    const { f } = stub({
+      "https://api.resend.com/usage": () =>
+        Response.json({
+          object: "usage",
+          emails: {
+            daily: { used: 96, limit: 100, resets_at: "2026-10-19T09:30:00Z" },
+            monthly: { used: 1, limit: 3000, resets_at: "not a date" },
+          },
+          ai_credits: { used: 1, limit: 5, next_increase_at: "2026-11-01T00:00:00Z" },
+          domains: { used: 1, limit: 3 },
+        }),
+    });
+    const out = await checkTarget(rs, TOKENS, NOW, LEVELS, f);
+    const at = (m: string) => out.find((s) => s.metric === m)?.resetsAt;
+    expect(at("resend.emails_daily")).toBe("2026-10-19T09:30:00.000Z");
+    expect(at("resend.ai_credits")).toBe("2026-11-01T00:00:00.000Z");
+    expect(at("resend.emails_monthly")).toBeUndefined();
+    expect(at("resend.domains")).toBeUndefined();
+  });
+
   it("resend: unexpected body throws", async () => {
     const { f } = stub({
       "https://api.resend.com/usage": () => Response.json({ name: "restricted_api_key" }),

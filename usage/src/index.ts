@@ -2,33 +2,45 @@
  * usage-guard-collector — read-only usage collector.
  *
  * scheduled(): one collect cycle (run.ts), or the other-platform checks on PROVIDERS_CRON.
- * fetch(): the overview page. Without the DASHBOARD_PASSWORD secret everything is 404 (the page lists every client's
- * usage); with it, HTTP Basic is required:
- *   /            the overview (public/index.html, adapted from free-tier-maxxer) → /data.js, /series.js (ledger.ts)
- *   /clients     consumption per client, found by email (views.ts)
- *   /platforms   every free allowance per platform + each client's consumption (views.ts, catalog.ts)
- *   /classic     the original 7-day table with spikes
+ * fetch(): the site. Without the DASHBOARD_PASSWORD secret everything is 404 (it lists every client's usage); with it,
+ * HTTP Basic is required:
+ *   /              Free-tier limits: every platform's allowances, how they reset, and every detected change
+ *   /consumption   pick an email → its platforms, consumption, exact reset times, uptime and domains (?email=)
+ *   /classic       the original 7-day table with spike detection
+ * POST /ingest is the one exception: the daily GitHub Actions jobs report with their own token (ingest.ts).
  */
 import { authorized } from "./auth";
 import type { Env } from "./env";
 import { loadDomains, readUptime } from "./health";
 import { handleIngest } from "./ingest";
-import { buildLedger, dataJs, seriesJs } from "./ledger";
+import { buildLedger } from "./ledger";
 import { PROVIDERS_CRON, renderIndex, runCollect, runProviders } from "./run";
 import { loadRuns, recentAlerts } from "./store";
-import { type Health, renderActivityPage, renderClientsPage, renderPlatformsPage } from "./views";
-
-/** Uptime (live from FlareWatch) and stored domain expiry for the client and activity pages. */
-async function health(env: Env): Promise<Health> {
-  const [uptime, domains] = await Promise.all([readUptime(env), loadDomains(env.USAGE)]);
-  return { uptime, domains, now: new Date() };
-}
+import { safeZone } from "./time";
+import { type PageData, renderConsumptionPage, renderLimitsPage } from "./views";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 const NOT_FOUND = () => new Response("Not found", { status: 404 });
-const JS = { "Content-Type": "application/javascript; charset=utf-8", ...NO_STORE };
 const html = (body: string) =>
   new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE } });
+
+/** Everything both tabs read: the ledger, FlareWatch's uptime, stored domain expiry, check runs and the change log. */
+async function pageData(env: Env): Promise<PageData> {
+  const [ledger, uptime, domains, runs, alerts] = await Promise.all([
+    buildLedger(env),
+    readUptime(env),
+    loadDomains(env.USAGE),
+    loadRuns(env.USAGE),
+    recentAlerts(env.USAGE, 200),
+  ]);
+  return {
+    ledger,
+    health: { uptime, domains, now: new Date() },
+    runs,
+    alerts,
+    tz: safeZone(env.TIME_ZONE),
+  };
+}
 
 export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -57,37 +69,11 @@ export default {
     }
     switch (url.pathname) {
       case "/":
-      case "/index.html": {
-        if (!env.ASSETS) return NOT_FOUND();
-        const page = await env.ASSETS.fetch(new Request(new URL("/index.html", url)));
-        return new Response(page.body, {
-          status: page.status,
-          headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE },
-        });
-      }
-      case "/data.js":
-        return new Response(dataJs(await buildLedger(env)), { headers: JS });
-      case "/series.js":
-        return new Response(seriesJs(await buildLedger(env)), { headers: JS });
-      case "/clients":
+        return html(renderLimitsPage(await pageData(env)));
+      case "/consumption":
         return html(
-          renderClientsPage(
-            await buildLedger(env),
-            url.searchParams.get("q") ?? "",
-            await health(env),
-          ),
+          renderConsumptionPage(await pageData(env), url.searchParams.get("email") ?? ""),
         );
-      case "/platforms":
-        return html(renderPlatformsPage(await buildLedger(env)));
-      case "/activity": {
-        const [ledger, h, runs, alerts] = await Promise.all([
-          buildLedger(env),
-          health(env),
-          loadRuns(env.USAGE),
-          recentAlerts(env.USAGE, 100),
-        ]);
-        return html(renderActivityPage(ledger, h, runs, alerts));
-      }
       case "/classic":
         return html(await renderIndex(env));
       default:

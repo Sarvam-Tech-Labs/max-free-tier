@@ -28,7 +28,7 @@ export function load(text) {
     if (ids.has(c.id)) throw new Error(`clients.yaml: duplicate id ${c.id}`);
     ids.add(c.id);
     if (!c.name) throw new Error(`clients.yaml: ${c.id} has no name`);
-    // The email identifies the client on the overview page (search by email). Several clients may share one (an owner
+    // The email groups clients under their owner on the Consumption tab. Several clients may share one (an owner
     // with several sites): searching it lists them all.
     if (c.email !== undefined && (typeof c.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email))) {
       throw new Error(`clients.yaml: ${c.id} email must be an email address`);
@@ -166,11 +166,10 @@ export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
     main: "src/index.ts",
     compatibility_date: compat,
     observability: { enabled: true, head_sampling_rate: 1 },
-    // The overview page (public/index.html) lists every client's usage. The Worker answers 404 unless the
-    // DASHBOARD_PASSWORD secret is set, then requires it (HTTP Basic), so the workers.dev URL is safe to leave on.
+    // The site lists every client's usage. The Worker answers 404 unless the DASHBOARD_PASSWORD secret is set, then
+    // requires it (HTTP Basic), so the workers.dev URL is safe to leave on.
     workers_dev: true,
     preview_urls: false,
-    assets: { directory: "public", binding: "ASSETS", run_worker_first: true, html_handling: "none" },
     // Read FlareWatch's state (GET /view) so the site shows uptime too. Only when some client has monitors, i.e. the
     // uptime Worker is deployed. The binding could also write; the usage Worker only ever reads /view.
     ...(monitors(clients).length > 0 ? { services: [{ binding: "MONITOR_WORKER", service: "flarewatch-worker" }] } : {}),
@@ -191,6 +190,7 @@ export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
       LIMIT_LEVELS: "50,80,95",
       THRESHOLDS_JSON: "",
       ORG_NAME: org.name,
+      TIME_ZONE: org.timeZone,
       CLIENTS_JSON: JSON.stringify(clientsInfo(clients)),
       ...(targets.length > 0 ? { PROVIDERS_JSON: JSON.stringify(targets) } : {}),
     },

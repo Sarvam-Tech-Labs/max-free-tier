@@ -11,10 +11,8 @@ import {
 } from "../src/health";
 import worker from "../src/index";
 import { handleIngest } from "../src/ingest";
-import type { Ledger } from "../src/ledger";
 import { runCollect, runProviders } from "../src/run";
-import { loadRuns, logAlert, recentAlerts, recordRun } from "../src/store";
-import { type Health, renderActivityPage, renderClientsPage } from "../src/views";
+import { loadRuns, logAlert, recentAlerts } from "../src/store";
 import { createFakeD1 } from "./helpers/fake-d1";
 
 const NOW = new Date("2026-10-18T11:00:00Z");
@@ -259,114 +257,5 @@ describe("runs and alerts are recorded for the Activity page", () => {
     await logAlert(db, "usage", "old", "2026-06-01T00:00:00Z");
     await logAlert(db, "usage", "new", NOW.toISOString());
     expect((await recentAlerts(db)).map((a) => a.text)).toEqual(["new"]);
-  });
-});
-
-function ledger(): Ledger {
-  const client = (id: string, name: string, monitors: string[], domains: string[] = []) => ({
-    id,
-    name,
-    email: `${id}@x.in`,
-    status: "live",
-    platforms: [],
-    accounts: [],
-    monitors: monitors.map((m) => ({ id: `${id}_${m}`, name: m, url: `https://${id}.in/${m}` })),
-    domains,
-  });
-  return {
-    series: [],
-    data: {
-      generatedAt: NOW.toISOString(),
-      project: "Agency",
-      providers: [],
-      clients: [
-        client("acme", "Acme", ["site", "api"], ["acme.in"]),
-        client("beta", "Beta", ["site"], ["beta.in"]),
-        client("calm", "Calm", []),
-      ],
-    },
-  };
-}
-
-const HEALTH: Health = {
-  uptime: VIEW,
-  now: NOW,
-  domains: [
-    {
-      domain: "acme.in",
-      expires: "2027-01-09T00:00:00.000Z",
-      error: null,
-      checkedAt: NOW.toISOString(),
-    },
-    {
-      domain: "beta.in",
-      expires: "2026-11-01T00:00:00.000Z",
-      error: null,
-      checkedAt: NOW.toISOString(),
-    },
-  ],
-};
-
-describe("client page with uptime and domains", () => {
-  it("shows sites up/down and domain expiry per client, and puts a client with a site down first", () => {
-    const html = renderClientsPage(ledger(), "", HEALTH);
-    expect(html.indexOf(">Acme</a>")).toBeLessThan(html.indexOf(">Calm</a>")); // a site down sorts first
-    expect(html).toContain("1 down");
-    expect(html).toContain("in 82 days"); // acme.in → 2027-01-09
-    expect(html).toContain("in 13 days"); // beta.in within 30 days: flagged
-    expect(html).toContain('class="soon"');
-    expect(html).toContain("down since 2026-10-18 10:40 UTC");
-    expect(html).toContain("Keyword missing");
-    expect(html).toContain("123 ms");
-    expect(html).toContain("Domain expires on 2026-11-01 (14 days remaining)");
-    expect(html).toContain("2026-10-10 08:00 UTC → 2026-10-10 08:12 UTC");
-    expect(html).toContain("1 warning"); // beta: its only site is degraded (domain warning), neither up nor down
-    expect(html).not.toContain("0/1 up");
-  });
-
-  it("says so when uptime is unavailable or a domain has not been looked up yet", () => {
-    const html = renderClientsPage(ledger(), "", { uptime: null, domains: [], now: NOW });
-    expect(html).toContain("uptime unavailable");
-    expect(html).toContain("not looked up yet");
-    expect(html).toContain("Uptime is unavailable right now");
-  });
-});
-
-describe("activity page", () => {
-  it("lists every check's last run and one timeline of alerts and outages", async () => {
-    const db = createFakeD1();
-    await recordRun(
-      db,
-      "collect",
-      true,
-      "12 rows, 0 spike(s), 0 limit level(s) crossed",
-      "2026-10-18T10:00:00Z",
-    );
-    await recordRun(db, "terms", false, "Vercel · limits changed", "2026-10-18T03:31:00Z");
-    await logAlert(
-      db,
-      "terms",
-      "Vercel · limits changed\n- 100 GB\n+ 50 GB",
-      "2026-10-18T03:31:00Z",
-    );
-    const html = renderActivityPage(ledger(), HEALTH, await loadRuns(db), await recentAlerts(db));
-    expect(html).toContain("60 min ago");
-    expect(html).toContain("needs a look");
-    expect(html).toContain("not run yet"); // providers / drift
-    expect(html).toContain("1 down"); // uptime row
-    expect(html).toContain("4 checks");
-    expect(html).toContain("Free-tier terms");
-    expect(html).toContain("Acme · api");
-    expect(html).toContain("Down: Keyword missing");
-    expect(html).toContain("Back up after 12 min");
-    // Newest first: the 10:40 outage before the 03:31 terms change.
-    // ("+ 50 GB" appears only in the timeline; the run summary above it also says "Vercel · limits changed".)
-    expect(html.indexOf("Down: Keyword missing")).toBeLessThan(html.indexOf("+ 50 GB"));
-  });
-
-  it("empty: says nothing happened; uptime unavailable is explicit", () => {
-    const html = renderActivityPage(ledger(), { uptime: null, domains: [], now: NOW }, [], []);
-    expect(html).toContain("Nothing has happened yet");
-    expect(html).toContain("The uptime Worker did not answer.");
   });
 });

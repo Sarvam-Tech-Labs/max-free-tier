@@ -12,10 +12,8 @@ usage/   usage-guard-collector — https://github.com/HowardZlh/usage-guard-coll
          Resend / Supabase / Vercel checks)
          Copyright (c) 2026 Sarvam Tech Labs, under the same MIT License.
 
-Research and the overview page used:
-         free-tier-maxxer — https://github.com/alemalvarez/free-tier-maxxer
-         Copyright (c) 2026 Alejandro Mata (alemalvarez) — MIT License (see usage/LICENSE.free-tier-maxxer)
-         usage/public/index.html is adapted from its concept/index.html; endpoints and token scopes from its research.
+Research used (endpoints, token scopes, free-plan gaps; no code copied):
+         free-tier-maxxer — https://github.com/alemalvarez/free-tier-maxxer — MIT License, Copyright (c) 2026 Alejandro Mata
 
 At run time the free-tier terms watch installs (does not redistribute):
          urlwatch — https://github.com/thp/urlwatch

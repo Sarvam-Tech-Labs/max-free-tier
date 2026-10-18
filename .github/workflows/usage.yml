@@ -5,7 +5,7 @@
 #          CLOUDFLARE_API_TOKEN (Workers Scripts: Edit + D1: Edit on the account the tools run in), CLOUDFLARE_ACCOUNT_ID,
 #          USAGE_CF_API_TOKEN (Account Analytics: Read on every client account), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
 #          PROVIDER_TOKENS (optional: JSON {"KEY": "token"} for the registry's usage.* blocks — GitHub/Resend/Supabase/Vercel),
-#          DASHBOARD_PASSWORD (optional: turns on the password-protected overview page; without it the page is 404),
+#          DASHBOARD_PASSWORD (optional: turns on the password-protected site; without it every page is 404),
 #          INGEST_TOKEN (optional: lets the daily terms/limits jobs report to the site's Activity page; same value as the
 #          INGEST_TOKEN secret in the repo that runs freetier-watch.yml).
 name: Deploy usage collector
