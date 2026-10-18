@@ -139,10 +139,11 @@ export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
     main: "src/index.ts",
     compatibility_date: compat,
     observability: { enabled: true, head_sampling_rate: 1 },
-    // The / page shows every client's usage and has no login: no public URL unless the registry opts in
-    // (`org.usage_page: true`, after putting Cloudflare Access in front of it). Alerts go to Telegram either way.
-    workers_dev: org.usage_page === true,
+    // The overview page (public/index.html) lists every client's usage. The Worker answers 404 unless the
+    // DASHBOARD_PASSWORD secret is set, then requires it (HTTP Basic), so the workers.dev URL is safe to leave on.
+    workers_dev: true,
     preview_urls: false,
+    assets: { directory: "public", binding: "ASSETS", run_worker_first: true, html_handling: "none" },
     // Hourly, so a limit is reported within the hour instead of within six. ~2 GraphQL calls per account per run.
     // Other platforms run at :30 in their own invocation (own subrequest budget), only when some client has them.
     triggers: { crons: targets.length > 0 ? ["0 * * * *", PROVIDERS_CRON] : ["0 * * * *"] },
@@ -159,6 +160,7 @@ export function usageConfig(clients, upstreamWrangler, org = DEFAULT_ORG) {
       ACCOUNT_LABELS_JSON: JSON.stringify(Object.fromEntries(accounts.map((c) => [c.cloudflare.account_id, c.name]))),
       LIMIT_LEVELS: "50,80,95",
       THRESHOLDS_JSON: "",
+      ORG_NAME: org.name,
       ...(targets.length > 0 ? { PROVIDERS_JSON: JSON.stringify(targets) } : {}),
     },
   };

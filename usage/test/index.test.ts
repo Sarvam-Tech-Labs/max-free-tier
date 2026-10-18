@@ -184,32 +184,90 @@ describe("renderIndex / fetch handler", () => {
     expect(html).not.toContain("<th>09-07</th>");
   });
 
-  it("GET / returns HTML with no-store; other paths and methods 404", async () => {
-    // The fetch handler uses the real clock; pin it so the 7-day window still covers the fixture row.
+  const PASSWORD = "correct horse";
+  const basic = (pw: string) => ({ Authorization: `Basic ${btoa(`anyone:${pw}`)}` });
+  const ctx = {
+    waitUntil: vi.fn(),
+    passThroughOnException: vi.fn(),
+    props: {},
+  } as unknown as ExecutionContext;
+  const assets = {
+    fetch: vi.fn(
+      async (r: Request) => new Response(`<html>overview ${new URL(r.url).pathname}</html>`),
+    ),
+  } as unknown as Fetcher;
+
+  it("without DASHBOARD_PASSWORD every path is 404, even with credentials", async () => {
+    const e = env({ ASSETS: assets });
+    for (const path of ["/", "/data.js", "/classic"]) {
+      expect((await worker.fetch(new Request(`https://x.test${path}`), e, ctx)).status).toBe(404);
+      const withAuth = new Request(`https://x.test${path}`, { headers: basic("") });
+      expect((await worker.fetch(withAuth, e, ctx)).status).toBe(404);
+    }
+  });
+
+  it("with it: no or wrong credentials → 401 + challenge; POST → 404", async () => {
+    const e = env({ DASHBOARD_PASSWORD: PASSWORD, ASSETS: assets });
+    const bad = [
+      {},
+      basic("wrong"),
+      { Authorization: "Basic !!!not-base64" },
+      { Authorization: "Bearer x" },
+    ];
+    for (const headers of bad) {
+      const res = await worker.fetch(new Request("https://x.test/", { headers }), e, ctx);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("WWW-Authenticate")).toContain("Basic");
+    }
+    const post = new Request("https://x.test/", { method: "POST", headers: basic(PASSWORD) });
+    expect((await worker.fetch(post, e, ctx)).status).toBe(404);
+  });
+
+  it("with the right password: / serves the overview, /data.js + /series.js the readings, /classic the table", async () => {
+    // The handler uses the real clock; pin it so the 7-day window still covers the fixture row.
     vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
-    const e = env();
+    const e = env({ DASHBOARD_PASSWORD: PASSWORD, ASSETS: assets, ORG_NAME: "Acme Agency" });
     await upsertRows(
       e.USAGE,
       [{ date: "2026-09-14", product: "kv", metric: "read", dim: "ns", value: 12 }],
       "2026-09-14T01:00:00Z",
     );
-    const ctx = {
-      waitUntil: vi.fn(),
-      passThroughOnException: vi.fn(),
-      props: {},
-    } as unknown as ExecutionContext;
-    const res = await worker.fetch(new Request("https://x.test/"), e, ctx);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toContain("text/html");
-    expect(res.headers.get("Cache-Control")).toBe("no-store");
-    const html = await res.text();
+    const get = (path: string) =>
+      worker.fetch(new Request(`https://x.test${path}`, { headers: basic(PASSWORD) }), e, ctx);
+
+    const home = await get("/");
+    expect(home.status).toBe(200);
+    expect(home.headers.get("Content-Type")).toContain("text/html");
+    expect(home.headers.get("Cache-Control")).toBe("no-store");
+    expect(await home.text()).toContain("overview /index.html");
+
+    const data = await get("/data.js");
+    expect(data.headers.get("Content-Type")).toContain("javascript");
+    expect(data.headers.get("Cache-Control")).toBe("no-store");
+    const body = await data.text();
+    expect(body.startsWith("window.FTM_DATA = ")).toBe(true);
+    expect(body).toContain("Acme Agency");
+    expect(body).toContain("Workers requests");
+
+    const series = await (await get("/series.js")).text();
+    expect(series).toContain("window.FTM_SERIES = ");
+    expect(series).toContain("kv.read");
+
+    const classic = await get("/classic");
+    expect(classic.status).toBe(200);
+    const html = await classic.text();
     expect(html).toContain("<code>kv.read</code>");
     expect(html).toContain("Last collected 2026-09-14T01:00:00Z");
 
-    expect((await worker.fetch(new Request("https://x.test/other"), e, ctx)).status).toBe(404);
-    expect(
-      (await worker.fetch(new Request("https://x.test/", { method: "POST" }), e, ctx)).status,
-    ).toBe(404);
+    expect((await get("/other")).status).toBe(404);
+    // No ASSETS binding → the overview page cannot be served.
+    const noAssets = env({ DASHBOARD_PASSWORD: PASSWORD });
+    const res = await worker.fetch(
+      new Request("https://x.test/", { headers: basic(PASSWORD) }),
+      noAssets,
+      ctx,
+    );
+    expect(res.status).toBe(404);
   });
 
   it("scheduled() runs the collect via waitUntil and logs a summary without the token", async () => {

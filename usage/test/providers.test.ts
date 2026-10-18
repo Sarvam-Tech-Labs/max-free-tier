@@ -4,6 +4,7 @@ import worker from "../src/index";
 import { formatLimitLine } from "../src/limits";
 import { checkTarget, type ProviderTarget, parseProviders, parseTokens } from "../src/providers";
 import { PROVIDERS_CRON, runProviders } from "../src/run";
+import { loadReadings } from "../src/store";
 import { createFakeD1 } from "./helpers/fake-d1";
 
 const NOW = new Date("2026-10-18T10:30:00Z");
@@ -109,9 +110,11 @@ describe("checkTarget", () => {
     expect(calls[1]?.url).toContain("/organizations/acme/");
   });
 
-  it("github: no minutes → nothing; HTTP error names the provider, never the token", async () => {
+  it("github: no minutes → a 0 reading (the overview shows it); HTTP error names the provider, never the token", async () => {
     const empty = stub({ "https://api.github.com/": () => Response.json({ usageItems: [] }) });
-    expect(await checkTarget(gh, TOKENS, NOW, LEVELS, empty.f)).toEqual([]);
+    expect(await checkTarget(gh, TOKENS, NOW, LEVELS, empty.f)).toMatchObject([
+      { metric: "github.actions_minutes", used: 0, limit: 2000, level: null },
+    ]);
     const denied = stub({ "https://api.github.com/": () => new Response("no", { status: 403 }) });
     const err = await checkTarget(gh, TOKENS, NOW, LEVELS, denied.f).catch((e: Error) => e.message);
     expect(err).toBe("github: HTTP 403");
@@ -131,6 +134,7 @@ describe("checkTarget", () => {
     });
     const out = await checkTarget(rs, TOKENS, NOW, LEVELS, f);
     expect(out.map((s) => [s.metric, s.period, s.level])).toEqual([
+      ["resend.contacts", "month", null], // used 0 is kept: the overview shows it, no alert fires
       ["resend.domains", "month", 50],
       ["resend.emails_daily", "day", 95],
       ["resend.emails_monthly", "month", 50],
@@ -158,13 +162,14 @@ describe("checkTarget", () => {
     const out = await checkTarget(sb, TOKENS, NOW, LEVELS, f);
     expect(out.map((s) => [s.metric, s.level])).toEqual([
       ["supabase.aaa.db_bytes", 80],
+      ["supabase.aaa.storage_bytes", null],
       ["supabase.bbb.status", 100],
       ["supabase.ccc.status", 100],
       ["supabase.ddd.status", 100],
     ]);
-    expect(formatLimitLine(out[1] as never)).toMatch(/Blog \(bbb\) is PAUSED/);
-    expect(out[2]?.note).toBe("ccc is RESTORING");
-    expect(out[3]?.note).toMatch(/not visible/);
+    expect(formatLimitLine(out[2] as never)).toMatch(/Blog \(bbb\) is PAUSED/);
+    expect(out[3]?.note).toBe("ccc is RESTORING");
+    expect(out[4]?.note).toMatch(/not visible/);
     const sql = calls.find((c) => c.url.endsWith("/database/query"));
     expect(JSON.parse(String(sql?.init.body)).read_only).toBe(true);
     expect(calls).toHaveLength(2); // paused / unhealthy projects get no SQL call
@@ -249,6 +254,33 @@ describe("runProviders", () => {
     expect((await runProviders(e, NOW, down.f)).notified).toBe(0);
     const up = stub(minutes(1900));
     expect((await runProviders(e, NOW, up.f)).notified).toBe(1);
+  });
+
+  it("stores every reading for the overview page, and a failed check keeps the previous one", async () => {
+    const e = env({ PROVIDERS_JSON: JSON.stringify([gh]) });
+    await runProviders(e, NOW, stub(minutes(300)).f); // 15% of 2,000: below every alert level
+    const first = await loadReadings(e.USAGE);
+    expect(first).toMatchObject([
+      {
+        target: "github:acme",
+        metric: "github.actions_minutes",
+        used: 300,
+        limit: 2000,
+        period: "month",
+        note: null,
+        checkedAt: NOW.toISOString(),
+      },
+    ]);
+
+    const later = new Date("2026-10-18T11:30:00Z");
+    const down = stub({ "https://api.github.com/": () => new Response("", { status: 503 }) });
+    expect((await runProviders(e, later, down.f)).error).toContain("HTTP 503");
+    expect(await loadReadings(e.USAGE)).toEqual(first); // still the 10:30 reading, so the page can show its age
+
+    await runProviders(e, later, stub(minutes(450)).f);
+    expect(await loadReadings(e.USAGE)).toMatchObject([
+      { used: 450, checkedAt: later.toISOString() },
+    ]);
   });
 
   it("scheduled() runs providers on PROVIDERS_CRON and the collect otherwise", async () => {

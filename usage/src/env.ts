@@ -16,6 +16,12 @@ export interface Env {
   PROVIDERS_JSON?: string;
   /** Secret: JSON object of token key → token, for the keys PROVIDERS_JSON names. Never logged. */
   PROVIDER_TOKENS?: string;
+  /** Secret. Without it the overview page does not exist (404); with it, HTTP Basic with this password. */
+  DASHBOARD_PASSWORD?: string;
+  /** Static assets binding serving public/index.html (the overview page). */
+  ASSETS?: Fetcher;
+  /** Shown in the overview page's title. */
+  ORG_NAME?: string;
   DISCORD_WEBHOOK_URL?: string;
   SLACK_WEBHOOK_URL?: string;
   /** Telegram bot token from @BotFather. Never logged. Needs TELEGRAM_CHAT_ID too. */

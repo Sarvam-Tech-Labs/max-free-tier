@@ -137,7 +137,6 @@ async function github(
   const minutes = (body.usageItems ?? [])
     .filter((i) => /actions/i.test(i.product ?? "") && /minute/i.test(i.unitType ?? ""))
     .reduce((a, i) => a + (i.grossQuantity ?? 0), 0);
-  if (minutes <= 0) return [];
   return [
     toStatus(
       "github.actions_minutes",
@@ -187,8 +186,8 @@ async function resend(
       quotas.push([`resend.${k}`, v as Quota, "month"]);
   }
   return quotas
-    .filter(([, q]) => typeof q?.limit === "number" && q.limit > 0 && (q.used ?? 0) > 0)
-    .map(([m, q, p]) => toStatus(m, q?.used as number, q?.limit as number, p, today, levels))
+    .filter(([, q]) => typeof q?.limit === "number" && q.limit > 0)
+    .map(([m, q, p]) => toStatus(m, q?.used ?? 0, q?.limit as number, p, today, levels))
     .sort((a, b) => a.metric.localeCompare(b.metric));
 }
 
@@ -262,7 +261,7 @@ async function supabase(
     const db = Number(rows[0]?.db ?? 0);
     const storage = Number(rows[0]?.storage ?? 0);
     // Sizes are levels, not monthly totals: "month" just makes each level re-alert once a month while it lasts.
-    if (db > 0)
+    if (rows[0])
       out.push(
         toStatus(
           `supabase.${ref}.db_bytes`,
@@ -273,7 +272,7 @@ async function supabase(
           levels,
         ),
       );
-    if (storage > 0)
+    if (rows[0])
       out.push(
         toStatus(
           `supabase.${ref}.storage_bytes`,

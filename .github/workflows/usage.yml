@@ -4,7 +4,8 @@
 # Caller secrets (secrets: inherit):
 #          CLOUDFLARE_API_TOKEN (Workers Scripts: Edit + D1: Edit on the account the tools run in), CLOUDFLARE_ACCOUNT_ID,
 #          USAGE_CF_API_TOKEN (Account Analytics: Read on every client account), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-#          PROVIDER_TOKENS (optional: JSON {"KEY": "token"} for the registry's usage.* blocks — GitHub/Resend/Supabase/Vercel).
+#          PROVIDER_TOKENS (optional: JSON {"KEY": "token"} for the registry's usage.* blocks — GitHub/Resend/Supabase/Vercel),
+#          DASHBOARD_PASSWORD (optional: turns on the password-protected overview page; without it the page is 404).
 name: Deploy usage collector
 on:
   workflow_call:
@@ -94,7 +95,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PROVIDER_TOKENS: ${{ secrets.PROVIDER_TOKENS }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
         run: |
-          for s in CF_API_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PROVIDER_TOKENS; do
+          for s in CF_API_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID PROVIDER_TOKENS DASHBOARD_PASSWORD; do
             if [ -n "${!s}" ]; then printf '%s' "${!s}" | pnpm exec wrangler secret put "$s" --config wrangler.generated.jsonc; else echo "skip $s (not set)"; fi
           done

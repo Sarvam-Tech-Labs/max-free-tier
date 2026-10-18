@@ -27,6 +27,7 @@ import {
   markLimitNotified,
   markNotified,
   pivot,
+  saveReadings,
   sumByMetric,
   upsertRows,
 } from "./store";
@@ -215,6 +216,7 @@ export async function runProviders(
       const crossed = statuses.filter((s) => s.level !== null).length;
       if (crossed > 0) summary.limitAlerts = (summary.limitAlerts ?? 0) + crossed;
       const key = `${t.kind}:${t.id}`;
+      await saveReadings(env.USAGE, key, statuses, collectedAt); // for the overview page
       const fresh = await filterUnnotifiedLimits(env.USAGE, key, statuses);
       if (fresh.length > 0) sections.push({ key, label, spikes: [], limits: fresh });
     } catch (e) {

@@ -172,3 +172,40 @@ export function splitKey(key: MetricKey): [string, string] {
   const i = key.indexOf(".");
   return i < 0 ? [key, ""] : [key.slice(0, i), key.slice(i + 1)];
 }
+
+export interface ReadingRow {
+  target: string;
+  metric: MetricKey;
+  used: number;
+  limit: number;
+  period: "day" | "month";
+  note: string | null;
+  checkedAt: string;
+}
+
+/** Replace every stored reading of one target (so a meter that disappeared disappears from the page). */
+export async function saveReadings(
+  db: D1Database,
+  target: string,
+  statuses: readonly LimitStatus[],
+  checkedAt: string,
+): Promise<void> {
+  const insert = db.prepare(
+    "INSERT INTO provider_readings (target, metric, used, limit_value, period, note, checked_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+  );
+  await db.batch([
+    db.prepare("DELETE FROM provider_readings WHERE target = ?1").bind(target),
+    ...statuses.map((s) =>
+      insert.bind(target, s.metric, s.used, s.limit, s.period, s.note ?? null, checkedAt),
+    ),
+  ]);
+}
+
+export async function loadReadings(db: D1Database): Promise<ReadingRow[]> {
+  const res = await db
+    .prepare(
+      "SELECT target, metric, used, limit_value AS limitValue, period, note, checked_at AS checkedAt FROM provider_readings ORDER BY target, metric",
+    )
+    .all<Omit<ReadingRow, "limit"> & { limitValue: number }>();
+  return res.results.map(({ limitValue, ...r }) => ({ ...r, limit: limitValue }));
+}
