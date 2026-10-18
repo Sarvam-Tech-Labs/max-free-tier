@@ -8,13 +8,13 @@ site you run, from one config file, and posts to one Telegram chat. It runs enti
 
 | What goes wrong | What max-free-tier does | Built on |
 |---|---|---|
-| A site is down, slow, returns the wrong page, or its SSL / domain is about to expire | 1-minute HTTP checks with keyword assertions, domain-registration checks, private status page with one group per client | [FlareWatch](https://github.com/saminnet/flarewatch) (MIT), on Cloudflare Workers |
+| A site is down, slow, returns the wrong page, or its SSL / domain is about to expire | 1-minute HTTP checks with keyword assertions, domain-registration checks; shown on the site's Consumption tab per owner, with Telegram alerts | [FlareWatch](https://github.com/saminnet/flarewatch) (MIT), on Cloudflare Workers |
 | A Cloudflare free-tier limit is running out (Workers requests, D1 rows, KV, R2, Queues, Durable Objects) | Hourly usage across **all** your clients' Cloudflare accounts with one read-only token; alerts at 50 / 80 / 95 % of each free limit, plus spike detection | [usage-guard-collector](https://github.com/HowardZlh/usage-guard-collector) (MIT) + our multi-account, %-of-limit and Telegram additions (going upstream) |
 | GitHub Actions minutes, Resend email quotas or Supabase database / storage running out; a Supabase project paused; Vercel blocking an account | Hourly read-only API checks per client, same 50 / 80 / 95 % alerts; paused / blocked alerts daily until fixed | Endpoints and token scopes from [free-tier-maxxer](https://github.com/alemalvarez/free-tier-maxxer)'s live-verified research (MIT) |
 | The free tier itself changes — a limit added, changed or removed | Daily diff of Cloudflare's pricing & limits pages **at their Markdown source** (exact line changes), plus Vercel, Supabase, Resend, Firebase and GitHub Actions pricing | [urlwatch](https://github.com/thp/urlwatch) (BSD), on GitHub Actions |
 
 ```
-clients.yaml (private repo) ──▶ GitHub Actions ──▶ FlareWatch      (uptime, status page) ─┐
+clients.yaml (private repo) ──▶ GitHub Actions ──▶ FlareWatch      (uptime engine)       ─┐
                                                └─▶ usage collector  (free-tier limits)  ──┼─▶ one Telegram chat
 watch/urls.yaml ─────────────▶ GitHub Actions ──▶ urlwatch          (free-tier terms)   ──┘
 ```

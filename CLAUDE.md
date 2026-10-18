@@ -24,7 +24,8 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 
 ## "Something is wrong with <client>"
 1. **Find it** in the private registry: platforms, Cloudflare account, repos, `local:` folder. Read that project's docs.
-2. **Down or broken?** Status page / Telegram alert text (status code, missing keyword, SSL/domain warning).
+2. **Down or broken?** The site's Consumption tab (Status strip) / Telegram alert text (status code, missing keyword,
+   SSL/domain warning). There is no separate status page: the uptime engine is headless by design (one place to look).
    Reproduce: `curl -sS -o /dev/null -w '%{http_code}' <url>`.
 3. **Free-tier limit?** The site (usage Worker: `/` Free-tier limits + change history, `/consumption?email=` per owner, `/tokens` connect platforms and paste/test/delete their tokens, `/classic` spikes; needs DASHBOARD_PASSWORD) or its Telegram alert. Cloudflare free limits hard-stop until 00:00 UTC
    (`usage/src/limits.ts` has the cited numbers).

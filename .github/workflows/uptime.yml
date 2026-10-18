@@ -1,13 +1,14 @@
-# Deploys FlareWatch (uptime/) with monitors generated from your PRIVATE registry.
+# Deploys FlareWatch's monitor engine (uptime/services/worker) with monitors generated from your PRIVATE registry. It runs
+# headless: the status-page app is NOT deployed, because the usage site is the one place to look (it reads the engine through a
+# service binding). Alerts still go to Telegram.
 # Adapted from uptime/.github/workflows/deploy.yml (upstream), run from the uptime/ folder. Upstream's quality job is
 # not repeated: its badge tests hard-code the demo monitor ids (see docs/UPSTREAM.md).
 #
 # REUSABLE: called from YOUR PRIVATE registry repo (see docs/SETUP.md), never run here. Wrangler prints the generated
 # config (client names, account ids) to the log, and Actions logs of a public repo are public — a called workflow runs
 # and logs in the caller's (private) repo.
-# Caller secrets (secrets: inherit): CLOUDFLARE_API_TOKEN (Workers Scripts: Edit, Workers KV Storage: Edit, Account
-# Settings: Read, User Details: Read, Memberships: Read), CLOUDFLARE_ACCOUNT_ID, TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
-# (alerts), FLAREWATCH_ADMIN_BASIC_AUTH (status page sign-in), optional HEARTBEAT_SECRET.
+# Caller secrets (secrets: inherit): CLOUDFLARE_API_TOKEN (Workers Scripts: Edit, Account Settings: Read, User Details: Read,
+# Memberships: Read), CLOUDFLARE_ACCOUNT_ID, TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (alerts), optional HEARTBEAT_SECRET.
 name: Deploy uptime monitor
 on:
   workflow_call:
@@ -82,35 +83,10 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Ensure KV namespace exists
-        run: |
-          set -euo pipefail
-          KV_NAMESPACE_TITLE="flarewatch-state"
-          find_namespace_id() {
-            vp exec --filter worker -- wrangler kv namespace list \
-              | jq -r --arg title "$KV_NAMESPACE_TITLE" 'map(select(.title == $title)) | .[0].id // empty'
-          }
-          KV_NAMESPACE_ID="$(find_namespace_id)"
-          if [ -z "$KV_NAMESPACE_ID" ]; then
-            vp exec --filter worker -- wrangler kv namespace create "$KV_NAMESPACE_TITLE" || true
-            KV_NAMESPACE_ID="$(find_namespace_id)"
-          fi
-          [ -n "$KV_NAMESPACE_ID" ] || { echo "::error::could not resolve KV namespace id"; exit 1; }
-          echo "KV_NAMESPACE_ID=$KV_NAMESPACE_ID" >> "$GITHUB_ENV"
-
-      - name: Inject KV namespace id
-        run: |
-          set -euo pipefail
-          sed -i "s/__FLAREWATCH_STATE_KV_NAMESPACE_ID__/$KV_NAMESPACE_ID/g" apps/status-page/wrangler.jsonc
-          ! grep -q "__FLAREWATCH_STATE_KV_NAMESPACE_ID__" apps/status-page/wrangler.jsonc
-
       - name: Deploy with Wrangler
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FLAREWATCH_ADMIN_BASIC_AUTH: ${{ secrets.FLAREWATCH_ADMIN_BASIC_AUTH }}
-          FLAREWATCH_AUTH_SECRET: ${{ secrets.FLAREWATCH_AUTH_SECRET }}
-          FLAREWATCH_OIDC_SECRETS: ${{ secrets.FLAREWATCH_OIDC_SECRETS }}
           HEARTBEAT_SECRET: ${{ secrets.HEARTBEAT_SECRET }}
         run: |
           set -euo pipefail
@@ -127,10 +103,4 @@ jobs:
           vp exec --filter worker -- wrangler deploy --config wrangler.toml
           put_secret worker wrangler.toml HEARTBEAT_SECRET "${HEARTBEAT_SECRET:-}"
           put_secret worker wrangler.toml FLAREWATCH_WEBHOOKS "$FLAREWATCH_WEBHOOKS"
-          vp run --filter status-page build
-          vp exec --filter status-page -- wrangler deploy --config dist/server/wrangler.json | tee "$RUNNER_TEMP/status.log"
-          put_secret status-page dist/server/wrangler.json FLAREWATCH_ADMIN_BASIC_AUTH "${FLAREWATCH_ADMIN_BASIC_AUTH:-}"
-          put_secret status-page dist/server/wrangler.json FLAREWATCH_AUTH_SECRET "${FLAREWATCH_AUTH_SECRET:-}"
-          put_secret status-page dist/server/wrangler.json FLAREWATCH_OIDC_SECRETS "${FLAREWATCH_OIDC_SECRETS:-}"
-          URL="$(grep -Eo 'https://[^[:space:]]+\.workers\.dev[^[:space:]]*' "$RUNNER_TEMP/status.log" | tail -n1 || true)"
-          echo "### FlareWatch deployed — status page: ${URL:-see the Cloudflare dashboard}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Uptime engine deployed (headless). Look at it on the usage site: Consumption → an email → Status." >> "$GITHUB_STEP_SUMMARY"

@@ -62,8 +62,6 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --repo $R
 gh secret set USAGE_CF_API_TOKEN    --repo $R   # analytics token
 gh secret set TELEGRAM_BOT_TOKEN    --repo $R
 gh secret set TELEGRAM_CHAT_ID      --repo $R
-gh secret set FLAREWATCH_ADMIN_BASIC_AUTH --repo $R   # status page password:
-#   cd uptime && npx -y pnpm@12.11.2 install --ignore-scripts && npx -y pnpm@12.11.2 run auth:secret -- <user> '<password>'
 # Encrypts tokens pasted on the site's Tokens page. Generate once; keep it (losing it means re-pasting the tokens):
 node -e 'console.log(require("crypto").randomBytes(32).toString("base64"))' | gh secret set TOKEN_ENCRYPTION_KEY --repo $R
 ```
@@ -75,7 +73,9 @@ The daily free-tier terms watch runs in your copy of *this* repo and holds no cl
 gh workflow run "Deploy max-free-tier" --repo <owner>/max-free-tier-clients
 gh workflow run "Free-tier terms watch" --repo <owner>/max-free-tier   # records the baseline; then runs daily
 ```
-The uptime job's summary shows the status page URL.
+The uptime engine runs headless (no separate status page, no second login): you look at uptime on the site, below, and
+get Telegram alerts. If an earlier version deployed FlareWatch's status page, delete that `flarewatch` Worker and its
+`flarewatch-state` KV namespace once: nothing redeploys them.
 
 ## 7. The site (off until you set a password)
 `https://max-free-tier-usage.<your-subdomain>.workers.dev/` has two tabs. **Free-tier limits** lists every platform's
