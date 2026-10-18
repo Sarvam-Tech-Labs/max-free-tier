@@ -693,7 +693,8 @@ describe("Tokens page", () => {
       p.f,
     );
     const html = renderTokensPage(await dataFor(e), await tokensOverview(e));
-    expect(html).toContain("<h1>Tokens</h1>");
+    expect(html).toContain("Connect a platform");
+    expect(html).toContain("Not linked to an email"); // this registry fixture has no clients, so no sidebar
     expect(html).toContain("<code>GH_ACME</code>");
     expect(html).toContain("ends …9z8y");
     expect(html).not.toContain(SECRET);

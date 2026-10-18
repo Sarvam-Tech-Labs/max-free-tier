@@ -92,7 +92,13 @@ export default {
           renderConsumptionPage(await pageData(env), url.searchParams.get("email") ?? ""),
         );
       case "/tokens":
-        return html(renderTokensPage(await pageData(env), await tokensOverview(env)));
+        return html(
+          renderTokensPage(
+            await pageData(env),
+            await tokensOverview(env),
+            url.searchParams.get("email") ?? "",
+          ),
+        );
       case "/classic":
         return html(await renderIndex(env));
       default:

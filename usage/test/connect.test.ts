@@ -568,7 +568,7 @@ describe("pages", () => {
   it("Tokens: Connect a platform asks for an email (with the known ones suggested); connected rows can be disconnected", async () => {
     const e = base();
     await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, platforms().f);
-    const html = renderTokensPage(await dataFor(e), await tokensOverview(e));
+    const html = renderTokensPage(await dataFor(e), await tokensOverview(e), OWNER);
     expect(html).toContain("data-connect-open");
     expect(html).toContain('id="connect-dialog"');
     expect(html).toContain('name="email" type="email" list="c-emails"');
@@ -578,9 +578,43 @@ describe("pages", () => {
     expect(html).toContain("On the site");
     expect(html).toContain("data-connection-delete=");
     expect(html).not.toContain('data-token-delete="RESEND_OCTO_TRADERS_TEST"'); // Disconnect replaces Delete
-    expect(html).toContain("Used by Acme, Acme Web"); // on the registry's GitHub row
-    // Grouped by the owning email: ops@acme.test before octo@… is alphabetical on the label.
-    expect(html.indexOf("GH_ACME")).toBeGreaterThan(-1);
+  });
+
+  it("Tokens has the Consumption layout: an email sidebar, and one card per platform for the picked email", async () => {
+    const e = base();
+    const o = await tokensOverview(e);
+    const html = renderTokensPage(await dataFor(e), o, "OPS@acme.test");
+    // Sidebar of owner emails, linking within the Tokens tab, the picked one marked.
+    expect(html).toContain('class="card sidebar"');
+    expect(html).toContain('href="/tokens?email=beta%40beta.test"');
+    expect(html).toContain('href="/tokens?email=ops%40acme.test" aria-current="page"');
+    expect(html).toContain('<div class="e" title="ops@acme.test">');
+    // Header card: the email, its projects, and Connect prefilled with it.
+    expect(html).toContain("<h1>ops@acme.test</h1>");
+    expect(html).toContain('data-connect-open data-email="ops@acme.test"');
+    // GitHub: its token, with the projects that share the account.
+    expect(html).toContain('aria-label="GitHub"');
+    expect(html).toContain("<code>GH_ACME</code>");
+    expect(html).toContain("Used by Acme, Acme Web");
+    // Vercel is declared by a project but has no token: a card with Connect Vercel prefilled for this email.
+    expect(html).toContain('aria-label="Vercel"');
+    expect(html).toContain("No Vercel token for this email yet");
+    expect(html).toContain('data-kind="vercel" data-email="ops@acme.test"');
+    // Another email's platforms are not shown here.
+    expect(html).not.toContain("<code>GH_LONER</code>");
+    // Switching email shows that one instead.
+    const beta = renderTokensPage(await dataFor(e), o, "beta@beta.test");
+    expect(beta).toContain("<h1>beta@beta.test</h1>");
+    expect(beta).toContain("No platform is on file for this email yet");
+    expect(beta).not.toContain("<code>GH_ACME</code>");
+  });
+
+  it("the sidebar flags an email whose tokens are missing; the picked default is the first that needs a look", async () => {
+    const e = base();
+    const html = renderTokensPage(await dataFor(e), await tokensOverview(e));
+    expect(html).toContain('class="dot"');
+    // ops@acme.test (missing GH_ACME) sorts before nothing worse here: it is chosen when none is asked for.
+    expect(html).toMatch(/aria-current="page"/);
   });
 
   it("a connection whose token was deleted still shows Add token and Disconnect; emails are escaped", async () => {
@@ -593,17 +627,22 @@ describe("pages", () => {
     // An email with markup is not a valid address, so nothing was created; use a valid one and delete its token.
     await connect(e, { kind: "resend", value: "re_abcdefghijkl", email: OWNER }, platforms().f);
     await e.USAGE.prepare("DELETE FROM tokens").run();
-    const html = renderTokensPage(await dataFor(e), await tokensOverview(e));
+    const html = renderTokensPage(await dataFor(e), await tokensOverview(e), OWNER);
     expect(html).toContain('data-mode="add"');
     expect(html).toContain("Disconnect");
     expect(html).not.toContain("x<b>y");
   });
 
-  it("with no usage blocks and no connections it says nothing is connected yet", async () => {
+  it("with no usage blocks and no connections, an email with no platforms says so; with no emails at all, nothing is connected", async () => {
     const e = base({ PROVIDERS_JSON: undefined });
-    expect(renderTokensPage(await dataFor(e), await tokensOverview(e))).toContain(
-      "Nothing is connected yet",
+    expect(renderTokensPage(await dataFor(e), await tokensOverview(e), "beta@beta.test")).toContain(
+      "No platform is on file for this email yet",
     );
+    const none = base({ PROVIDERS_JSON: undefined, CLIENTS_JSON: undefined });
+    const html = renderTokensPage(await dataFor(none), await tokensOverview(none));
+    expect(html).toContain("Nothing is connected yet");
+    expect(html).toContain("data-connect-open"); // still a way in, without a sidebar
+    expect(html).not.toContain('class="card sidebar"');
   });
 });
 

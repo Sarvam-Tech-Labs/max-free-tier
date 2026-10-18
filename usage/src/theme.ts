@@ -267,7 +267,7 @@ const SCRIPT = `
         gh.hidden=ck.value!=='github';if(ck.value!=='vercel'){tm.hidden=true;cteam.replaceChildren()}
       };
       const reset=()=>{cv.value='';cx.value='';corg.value='';cem.value='';ce.hidden=true;cs.disabled=false;cs.textContent='Verify and connect';tm.hidden=true;cteam.replaceChildren();sync()};
-      document.querySelectorAll('[data-connect-open]').forEach(b=>b.addEventListener('click',()=>{reset();cd.showModal();cv.focus()}));
+      document.querySelectorAll('[data-connect-open]').forEach(b=>b.addEventListener('click',()=>{reset();if(b.dataset.email)cem.value=b.dataset.email;if(b.dataset.kind)ck.value=b.dataset.kind;sync();cd.showModal();cv.focus()}));
       ck.addEventListener('change',sync);
       cd.addEventListener('close',reset);c('[data-cancel]').addEventListener('click',()=>cd.close());
       c('form').addEventListener('submit',async e=>{

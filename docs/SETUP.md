@@ -100,6 +100,10 @@ The model: **an email owns one account per platform; its projects run on those a
 (one GitHub account has one Actions-minutes pool however many repos use it), so a token belongs to an email and a platform,
 never to a project. A project (a registry client) belongs to an email and lists the platforms it uses.
 
+The **Tokens** page has the same layout as Consumption: the emails in a sidebar (a dot means a token is missing, failing or
+about to expire), and for the one you pick, a card per platform with its token, status and actions. A platform a project
+uses but that has no token yet shows a **Connect** button with that email already filled in.
+
 Open the site's **Tokens** page and click **Connect a platform**. Pick the platform, paste its token, and type the email its
 account is registered with (emails you already use are suggested; a new one simply appears in the Consumption sidebar). The
 site finds the rest from the token itself: GitHub's login, the Vercel team (it asks which if the token sees several), the

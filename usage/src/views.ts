@@ -264,8 +264,8 @@ export function accountsOf(ledger: Ledger): Account[] {
 }
 
 const accountKey = (a: Account): string => (a.email === "" ? "none" : a.email);
-const accountHref = (a: Account): string =>
-  `/consumption?email=${encodeURIComponent(accountKey(a))}`;
+const accountHref = (a: Account, base = "/consumption"): string =>
+  `${base}?email=${encodeURIComponent(accountKey(a))}`;
 
 interface SiteRow {
   client: string;
@@ -321,13 +321,19 @@ function attention(a: Account, d: PageData): number {
   );
 }
 
-function sidebar(accounts: readonly Account[], selected: Account, d: PageData): string {
+function sidebar(
+  accounts: readonly Account[],
+  selected: Account,
+  d: PageData,
+  base = "/consumption",
+  needsAttention: (a: Account) => boolean = (a) => attention(a, d) > 0,
+): string {
   const items = accounts
     .map((a) => {
       const n = a.clients.length;
       const label = a.email === "" ? "No email on file" : a.email;
-      const hot = attention(a, d) > 0 ? `<span class="dot" title="Needs attention"></span>` : "";
-      return `<a class="acct" href="${accountHref(a)}"${a === selected ? ' aria-current="page"' : ""}><span class="avatar">${esc(a.email === "" ? "?" : label.charAt(0))}</span><span class="t"><div class="e" title="${esc(label)}">${esc(label)}</div><div class="p">${n} project${n === 1 ? "" : "s"}</div></span>${hot}</a>`;
+      const hot = needsAttention(a) ? `<span class="dot" title="Needs attention"></span>` : "";
+      return `<a class="acct" href="${accountHref(a, base)}"${a === selected ? ' aria-current="page"' : ""}><span class="avatar">${esc(a.email === "" ? "?" : label.charAt(0))}</span><span class="t"><div class="e" title="${esc(label)}">${esc(label)}</div><div class="p">${n} project${n === 1 ? "" : "s"}</div></span>${hot}</a>`;
     })
     .join("");
   return `<aside class="card sidebar" id="accounts" aria-label="Accounts"><div class="sidebar-head"><h2>Accounts</h2><button type="button" class="btn icon-only" data-sidebar-toggle aria-controls="accounts" aria-expanded="true" aria-label="Collapse the account list" title="Collapse">${icon("panel", 16)}</button></div><nav aria-label="Email accounts">${items}</nav></aside>`;
@@ -616,23 +622,6 @@ function stateOf(name: string, o: TokensOverview): TokenState {
   return at ? { kind: "working", at } : { kind: "saved" };
 }
 
-function usedFor(r: RequiredToken, ledger: Ledger): string {
-  return r.targets
-    .map((t) => {
-      const what = t.account ?? t.projects?.join(", ") ?? "";
-      const projects = ledger.data.clients
-        .filter(
-          (c) =>
-            !c.synthetic &&
-            c.email?.toLowerCase() === t.id &&
-            c.platforms.some((x) => platformOf(x) === r.kind),
-        )
-        .map((c) => c.name);
-      return `<div>${esc(t.client)}${what ? ` <span class="muted small">· ${esc(what)}</span>` : ""}</div>${projects.length > 0 ? `<div class="muted small">Used by ${projects.map(esc).join(", ")}</div>` : ""}`;
-    })
-    .join("");
-}
-
 function expiryCell(m: TokenMeta | undefined, d: PageData): string {
   if (!m?.expiresAt) return `<span class="muted">No expiry set</span>`;
   const days = daysUntil(m.expiresAt, d.health.now);
@@ -656,47 +645,73 @@ function statusCell(s: TokenState, d: PageData): string {
   }
 }
 
-export function renderTokensPage(d: PageData, o: TokensOverview): string {
+/** The tokens an account's platforms use: its email's, or its projects' for a project with no email. */
+function tokensOf(a: Account, o: TokensOverview): RequiredToken[] {
+  const ids = new Set(a.clients.map((c) => c.id));
+  return o.required.filter((r) =>
+    r.targets.some((t) => (a.email !== "" && t.id === a.email) || ids.has(t.id)),
+  );
+}
+
+/** Missing, failing or about to expire: what the dot beside an email on the Tokens page means. */
+function tokenAttention(a: Account, o: TokensOverview, d: PageData): boolean {
+  return tokensOf(a, o).some((r) => {
+    const s = stateOf(r.name, o);
+    if (s.kind === "failing" || s.kind === "missing") return true;
+    const exp = o.managed.find((m) => m.name === r.name)?.expiresAt;
+    return exp ? daysUntil(exp, d.health.now) <= 14 : false;
+  });
+}
+
+const WORST: Readonly<Record<TokenState["kind"], number>> = {
+  failing: 3,
+  missing: 2,
+  saved: 1,
+  working: 0,
+};
+
+/** Same layout as the Consumption tab: emails in a sidebar, and for the one you pick, a card per platform. */
+export function renderTokensPage(d: PageData, o: TokensOverview, email?: string): string {
   const off = !o.enabled;
   const disabled = off ? ' disabled title="Set the TOKEN_ENCRYPTION_KEY secret first"' : "";
   const required = new Set(o.required.map((r) => r.name));
 
-  // Grouped by the email that owns the account, then by platform.
-  const byOwner = [...o.required].sort(
-    (a, b) =>
-      (a.targets[0]?.client ?? "").localeCompare(b.targets[0]?.client ?? "") ||
-      a.kind.localeCompare(b.kind),
-  );
-  const rows = byOwner
-    .map((r) => {
-      const m = o.managed.find((x) => x.name === r.name);
-      const fromSecret = !m && o.secretNames.includes(r.name);
-      const state = stateOf(r.name, o);
-      const added = m
-        ? `ends …${esc(m.last4)} · added ${esc(formatInstant(m.createdAt, d.tz).text.split(", ")[0] ?? "")}`
-        : fromSecret
-          ? "from the deployment secret"
-          : "";
-      const btn = (attrs: string, ico: Parameters<typeof icon>[0], label: string, cls = "") =>
-        `<button type="button" class="btn small ${cls}" ${attrs}${disabled}>${icon(ico, 14)}${label}</button>`;
-      const conn = o.connections.find((c) => c.tokenName === r.name);
-      const remove = conn
-        ? btn(`data-connection-delete="${esc(conn.id)}"`, "trash", "Disconnect", "danger")
-        : m
-          ? btn(`data-token-delete="${esc(r.name)}"`, "trash", "Delete", "danger")
-          : "";
-      const actions =
-        state.kind === "missing"
-          ? btn(`data-token-open="${esc(r.name)}" data-mode="add"`, "key", "Add token", "primary") +
-            remove
-          : [
-              btn(`data-token-open="${esc(r.name)}" data-mode="replace"`, "key", "Replace"),
-              btn(`data-token-test="${esc(r.name)}"`, "refresh", "Test"),
-              remove,
-            ].join("");
-      return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${conn ? ` ${badge("On the site", "mute")}` : ""}${added ? `<div class="muted small">${added}</div>` : ""}</td><td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td><td data-label="Account">${usedFor(r, d.ledger)}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
-    })
-    .join("");
+  const btn = (attrs: string, ico: Parameters<typeof icon>[0], label: string, cls = "") =>
+    `<button type="button" class="btn small ${cls}" ${attrs}${disabled}>${icon(ico, 14)}${label}</button>`;
+
+  const tokenRow = (r: RequiredToken, withPlatform: boolean): string => {
+    const m = o.managed.find((x) => x.name === r.name);
+    const fromSecret = !m && o.secretNames.includes(r.name);
+    const state = stateOf(r.name, o);
+    const added = m
+      ? `ends …${esc(m.last4)} · added ${esc(formatInstant(m.createdAt, d.tz).text.split(", ")[0] ?? "")}`
+      : fromSecret
+        ? "from the deployment secret"
+        : "";
+    const conn = o.connections.find((c) => c.tokenName === r.name);
+    const remove = conn
+      ? btn(`data-connection-delete="${esc(conn.id)}"`, "trash", "Disconnect", "danger")
+      : m
+        ? btn(`data-token-delete="${esc(r.name)}"`, "trash", "Delete", "danger")
+        : "";
+    const actions =
+      state.kind === "missing"
+        ? btn(`data-token-open="${esc(r.name)}" data-mode="add"`, "key", "Add token", "primary") +
+          remove
+        : [
+            btn(`data-token-open="${esc(r.name)}" data-mode="replace"`, "key", "Replace"),
+            btn(`data-token-test="${esc(r.name)}"`, "refresh", "Test"),
+            remove,
+          ].join("");
+    const what = r.targets
+      .map((t) => t.account ?? t.projects?.join(", ") ?? "")
+      .filter((x) => x !== "")
+      .map((x) => esc(x))
+      .join(", ");
+    return `<tr id="token-${esc(r.name)}"><td data-label="Token"><code>${esc(r.name)}</code>${conn ? ` ${badge("On the site", "mute")}` : ""}${added ? `<div class="muted small">${added}</div>` : ""}</td>${withPlatform ? `<td data-label="Platform">${badge(KIND_LABEL[r.kind], "mute")}</td>` : ""}<td data-label="Account">${what || `<span class="muted">—</span>`}</td><td data-label="Status">${statusCell(state, d)}</td><td data-label="Expires">${expiryCell(m, d)}</td><td data-label=""><div class="actions">${actions}</div></td></tr>`;
+  };
+  const tokenTable = (rows: string, withPlatform: boolean): string =>
+    `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th>${withPlatform ? "<th>Platform</th>" : ""}<th>Account</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 
   const others = o.managed.filter((m) => !required.has(m.name));
   const otherRows = others
@@ -747,13 +762,82 @@ export function renderTokensPage(d: PageData, o: TokensOverview): string {
 <div class="dialog-actions"><button type="button" class="btn" data-cancel>Cancel</button><button type="submit" class="btn primary" data-save>Verify and save</button></div>
 </form></dialog>${connectDialog}<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>`;
 
-  const body = `<div class="page-head"><h1>Tokens</h1><p class="lead">Connect a platform here: paste its token and say which email it belongs to, and the site does the rest. Tokens are verified, encrypted and never shown again.</p><div class="actions" style="margin-top:16px"><button type="button" class="btn primary" data-connect-open${disabled}>${icon("key", 16)}Connect a platform</button></div></div>
-<div class="stack">
+  const accounts = accountsOf(d.ledger);
+  const wanted = (email ?? "").trim().toLowerCase();
+  const selected =
+    accounts.find((a) => accountKey(a) === wanted) ??
+    accounts.find((a) => tokenAttention(a, o, d)) ??
+    accounts[0];
+
+  // Tokens whose owner is not in the sidebar (e.g. a registry entry for a client that is not listed).
+  const placed = new Set(accounts.flatMap((a) => tokensOf(a, o).map((r) => r.name)));
+  const unplaced = o.required.filter((r) => !placed.has(r.name));
+
+  const connectBtn = (attrs: string, label: string) =>
+    `<button type="button" class="btn primary" data-connect-open ${attrs}${disabled}>${icon("key", 16)}${label}</button>`;
+
+  const section = (a: Account, k: ProviderKind): string => {
+    const toks = tokensOf(a, o).filter((r) => r.kind === k);
+    const usedBy = a.clients
+      .filter((c) => !c.synthetic && c.platforms.some((x) => platformOf(x) === k))
+      .map((c) => c.name);
+    if (toks.length === 0 && usedBy.length === 0) return "";
+    const worst = toks.map((r) => stateOf(r.name, o).kind).sort((x, y) => WORST[y] - WORST[x])[0];
+    const status =
+      worst === undefined
+        ? badge("Not connected", "warn")
+        : worst === "failing"
+          ? badge("Failing", "bad")
+          : worst === "missing"
+            ? badge("Missing", "warn")
+            : worst === "saved"
+              ? badge("Saved", "mute")
+              : badge("Working", "ok");
+    const head = `<div class="section-head"><h2>${esc(KIND_LABEL[k])}</h2><span class="grow"></span>${status}</div>${usedBy.length > 0 ? `<div class="muted small" style="margin:-4px 0 12px">Used by ${usedBy.map(esc).join(", ")}</div>` : ""}`;
+    if (toks.length === 0) {
+      return `<section class="card" aria-label="${esc(KIND_LABEL[k])}">${head}<div class="note" style="margin-bottom:0">${icon("plug", 18)}<div>No ${esc(KIND_LABEL[k])} token for this email yet. Paste one to read its usage.</div></div><div class="actions" style="margin-top:12px">${connectBtn(`data-kind="${k}" data-email="${esc(a.email)}"`, `Connect ${esc(KIND_LABEL[k])}`)}</div></section>`;
+    }
+    return `<section class="card" aria-label="${esc(KIND_LABEL[k])}">${head}${tokenTable(toks.map((r) => tokenRow(r, false)).join(""), false)}</section>`;
+  };
+
+  const kinds = PLATFORM_ORDER.filter((p): p is ProviderKind => p !== "cloudflare");
+  const sections = selected ? kinds.map((k) => section(selected, k)).join("") : "";
+
+  const projects = selected
+    ? selected.clients
+        .filter((c) => !c.synthetic)
+        .map((c) => `${badge(c.name)}${c.status === "live" ? "" : badge(c.status, "warn")}`)
+        .join("")
+    : "";
+  const who = selected
+    ? `<section class="card who"><div class="card-head" style="margin:0"><button type="button" class="btn icon-only" data-sidebar-toggle aria-controls="accounts" aria-expanded="true" aria-label="Show or hide the account list" title="Accounts">${icon("panel", 16)}</button><div class="grow"><div class="muted small">Account</div><h1>${esc(selected.email === "" ? "No email on file" : selected.email)}</h1></div>${connectBtn(`data-email="${esc(selected.email)}"`, "Connect a platform")}</div>${projects ? `<div class="chips pad">${projects}</div>` : ""}</section>`
+    : `<section class="card who"><div class="card-head" style="margin:0"><div class="grow"><div class="muted small">Tokens</div><h1>Connect a platform</h1></div>${connectBtn("", "Connect a platform")}</div></section>`;
+
+  const empty =
+    selected && sections === ""
+      ? `<div class="card empty">No platform is on file for this email yet. Use <b>Connect a platform</b> to add one.</div>`
+      : !selected && unplaced.length === 0
+        ? `<div class="card empty">Nothing is connected yet. Use <b>Connect a platform</b> above.</div>`
+        : "";
+
+  const unplacedCard =
+    unplaced.length > 0
+      ? `<section class="card" aria-label="Tokens not linked to an email"><div class="card-head"><h2>Not linked to an email</h2></div>${tokenTable(
+          [...unplaced]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((r) => tokenRow(r, true))
+            .join(""),
+          true,
+        )}</section>`
+      : "";
+  const othersCard =
+    others.length > 0
+      ? `<section class="card" aria-label="Other saved tokens"><div class="card-head"><h2>Other saved tokens</h2></div><div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Note</th><th>Actions</th></tr></thead><tbody>${otherRows}</tbody></table></div></section>`
+      : "";
+
+  const main = `<div class="stack" style="min-width:0">
 ${off ? `<div class="note bad">${icon("alert", 18)}<div><b>Token storage is not enabled.</b> Set the <code>TOKEN_ENCRYPTION_KEY</code> secret and redeploy to add tokens here. Tokens set in the deployment secret keep working.</div></div>` : ""}
-<section class="card" aria-label="Connected platforms"><div class="card-head"><h2>Connected platforms</h2></div>
-${rows === "" ? `<div class="empty">Nothing is connected yet. Use <b>Connect a platform</b> above.</div>` : `<div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Platform</th><th>Account</th><th>Status</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>`}
-</section>
-${others.length > 0 ? `<section class="card" aria-label="Other saved tokens"><div class="card-head"><h2>Other saved tokens</h2></div><div class="table-wrap"><table class="compact cards"><thead><tr><th>Token</th><th>Note</th><th>Actions</th></tr></thead><tbody>${otherRows}</tbody></table></div></section>` : ""}
+${who}${sections}${empty}${unplacedCard}${othersCard}
 <section class="card" aria-label="How tokens are kept"><div class="card-head"><span class="tile">${icon("shield", 22)}</span><h2>How tokens are kept</h2></div>
 <ul class="muted" style="margin:0;padding-left:20px;display:grid;gap:6px">
 <li>Encrypted (AES-256-GCM) before they are stored. The key is a separate secret, never in the database.</li>
@@ -761,6 +845,10 @@ ${others.length > 0 ? `<section class="card" aria-label="Other saved tokens"><di
 <li>Verified against the platform before saving, then checked every hour. A Telegram alert follows if one fails twice in a row or expires within 14 days.</li>
 <li>Anyone with the site password can add, replace or delete tokens, but cannot read them. Prefer read-only tokens where the platform offers them.</li>
 </ul></section>
-</div>${helps}${kindHelps}${dialog}`;
+</div>`;
+  const body =
+    accounts.length > 0
+      ? `<div class="layout">${sidebar(accounts, selected as Account, d, "/tokens", (a) => tokenAttention(a, o, d))}${main}</div>${helps}${kindHelps}${dialog}`
+      : `${main}${helps}${kindHelps}${dialog}`;
   return page(d, "Tokens", "tokens", body);
 }
