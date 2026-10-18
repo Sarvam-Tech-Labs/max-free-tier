@@ -239,7 +239,8 @@ function targetProvider(
   const metrics = rows
     .filter((r) => r.note === null)
     .map((r): Meter => {
-      const size = r.metric.endsWith("_bytes");
+      // A size (database, storage) never resets; a byte count that is a monthly quota (data transfer) does.
+      const size = r.metric.endsWith("_bytes") && r.metric !== "github.packages_transfer_bytes";
       const stale = now.getTime() - Date.parse(r.checkedAt) > STALE_AFTER_MS;
       const p = r.period === "day" ? day : month;
       return {

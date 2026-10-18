@@ -214,6 +214,28 @@ describe("buildLedger · other platforms", () => {
     expect(at("resend.domains")).toBe("2026-11-01T00:00:00.000Z");
   });
 
+  it("GitHub Packages transfer is a monthly byte quota that resets; a stored size never does", async () => {
+    const e = env({ CF_ACCOUNT_ID: undefined, PROVIDERS_JSON: targets });
+    await saveReadings(
+      e.USAGE,
+      "github:acme",
+      [
+        status("github.packages_transfer_bytes", 2e8, 1e9),
+        status("github.codespaces_core_hours", 12.5, 120),
+      ],
+      "2026-10-18T10:00:00Z",
+    );
+    const { data } = await buildLedger(e, NOW);
+    const gh = data.providers.find((p) => p.platform === "github");
+    const m = (k: string) => gh?.metrics.find((x) => x.key === k);
+    expect(m("github.packages_transfer_bytes")).toMatchObject({
+      unit: "bytes",
+      resets: true,
+      resetsAt: "2026-11-01T00:00:00.000Z",
+    });
+    expect(m("github.codespaces_core_hours")).toMatchObject({ unit: "hours", resets: true });
+  });
+
   it("a reading older than the stale window carries a note; a fresh one does not", async () => {
     const e = env({ CF_ACCOUNT_ID: undefined, PROVIDERS_JSON: targets });
     const old = new Date(NOW.getTime() - STALE_AFTER_MS - 60_000).toISOString();
