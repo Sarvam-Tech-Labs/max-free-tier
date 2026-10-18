@@ -107,14 +107,12 @@ test("usage: other platforms of live clients become PROVIDERS_JSON + a :30 cron;
   assert.throws(bad("{ supabase: { token: SB, projects: [] } }"), /project refs/);
 });
 
-test("email identifies a client: optional, must look like an email, unique case-insensitively; non-paused clients go to CLIENTS_JSON", () => {
-  const bad = (a, b = "") => () => load(yaml(`  - { id: a, name: A, status: live${a} }\n${b}`));
+test("email identifies a client: optional, must look like an email, may be shared by an owner's several clients; non-paused clients go to CLIENTS_JSON", () => {
+  const bad = (a) => () => load(yaml(`  - { id: a, name: A, status: live${a} }`));
   assert.throws(bad(", email: not-an-email"), /email must be an email address/);
   assert.throws(bad(", email: 42"), /email must be an email address/);
-  assert.throws(
-    bad(", email: Owner@Acme.in", "  - { id: b, name: B, status: live, email: owner@acme.in }"),
-    /used by two clients/,
-  );
+  const shared = load(yaml("  - { id: a, name: A, status: live, email: Owner@Acme.in }\n  - { id: b, name: B, status: live, email: owner@acme.in }"));
+  assert.deepEqual(clientsInfo(shared).map((c) => c.email), ["owner@acme.in", "owner@acme.in"]);
   const reg = load(
     yaml(`  - { id: a, name: A, status: live, email: Owner@Acme.IN, platforms: [vercel], cloudflare: { account_id: "${ACCT}" } }
   - { id: b, name: B, status: unconfirmed }

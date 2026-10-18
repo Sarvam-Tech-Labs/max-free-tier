@@ -23,18 +23,15 @@ export function load(text) {
   const clients = doc?.clients;
   if (!Array.isArray(clients) || clients.length === 0) throw new Error("clients.yaml: `clients` must be a non-empty list");
   const ids = new Set();
-  const emails = new Set();
   for (const c of clients) {
     if (!c?.id || !/^[a-z0-9-]+$/.test(c.id)) throw new Error(`clients.yaml: bad id ${JSON.stringify(c?.id)} (a-z, 0-9, -)`);
     if (ids.has(c.id)) throw new Error(`clients.yaml: duplicate id ${c.id}`);
     ids.add(c.id);
     if (!c.name) throw new Error(`clients.yaml: ${c.id} has no name`);
-    // The email identifies the client on the overview page (search by email), so it must be unique when present.
-    if (c.email !== undefined) {
-      if (typeof c.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email)) throw new Error(`clients.yaml: ${c.id} email must be an email address`);
-      const key = c.email.toLowerCase();
-      if (emails.has(key)) throw new Error(`clients.yaml: email ${c.email} is used by two clients (it identifies one client)`);
-      emails.add(key);
+    // The email identifies the client on the overview page (search by email). Several clients may share one (an owner
+    // with several sites): searching it lists them all.
+    if (c.email !== undefined && (typeof c.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email))) {
+      throw new Error(`clients.yaml: ${c.id} email must be an email address`);
     }
     if (!STATUSES.has(c.status)) throw new Error(`clients.yaml: ${c.id} status must be live | unconfirmed | paused`);
     const acct = c.cloudflare?.account_id;

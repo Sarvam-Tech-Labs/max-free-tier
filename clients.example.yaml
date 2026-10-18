@@ -4,7 +4,7 @@
 #
 # Validate this file:  node scripts/sync.mjs --registry clients.example.yaml --dry-run
 #
-# email: the client's email. It identifies them on the overview page (search /clients by email); must be unique.
+# email: the client's email. It identifies them on the overview page (search /clients by email). Several clients may share one email (an owner with several sites).
 # status: live = monitored and on alerts · unconfirmed = recorded so it is findable, not monitored · paused = keep the
 #         record, stop monitoring.
 # cloudflare.account_id: the client's own account (your team is a member). The usage collector reads every listed
