@@ -79,55 +79,96 @@ describe("domains", () => {
     expect(domainsOf("{}")).toEqual([]);
   });
 
-  it("refreshDomains looks up expiry once a day, keeps a known date when a lookup fails", async () => {
-    const db = createFakeD1();
-    const rdap = vi.fn(async (url: string) =>
-      url.endsWith("good.in")
-        ? Response.json({
-            events: [
-              { eventAction: "registration", eventDate: "2020-01-01T00:00:00Z" },
-              { eventAction: "expiration", eventDate: "2027-01-09T13:50:49Z" },
-            ],
-          })
-        : url.endsWith("bare.in")
-          ? Response.json({ events: [] })
-          : new Response("", { status: 404 }),
-    ) as unknown as typeof fetch;
+  /** IANA bootstrap + one registry per TLD: .in answers with dates, .zz is not in the list, .org only offers http. */
+  function registry() {
+    const calls: string[] = [];
+    const f = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url === "https://data.iana.org/rdap/dns.json") {
+        return Response.json({
+          services: [
+            [["in"], ["https://rdap.registry.in/"]],
+            [["org"], ["http://insecure.example/"]],
+          ],
+        });
+      }
+      if (url.endsWith("/domain/good.in")) {
+        return Response.json({
+          events: [
+            { eventAction: "registration", eventDate: "2020-01-01T00:00:00Z" },
+            { eventAction: "expiration", eventDate: "2027-01-09T13:50:49Z" },
+          ],
+        });
+      }
+      if (url.endsWith("/domain/bare.in")) return Response.json({ events: [] });
+      return new Response("", { status: 404 });
+    });
+    return { f: f as unknown as typeof fetch, calls };
+  }
 
+  it("refreshDomains asks the registry IANA names (never rdap.org, which refuses Cloudflare), one bootstrap per batch", async () => {
+    const db = createFakeD1();
+    const r = registry();
     const errors = await refreshDomains(
       db,
-      ["good.in", "bare.in", "gone.in", "good.in"],
+      ["good.in", "bare.in", "gone.in", "GOOD.in", "x.zz", "x.org"],
       NOW,
-      rdap,
+      r.f,
     );
     expect(errors).toEqual([
       "bare.in: no expiration date in the RDAP record",
       "gone.in: RDAP HTTP 404",
+      "x.zz: no RDAP service for .zz",
+      "x.org: no RDAP service for .org",
     ]);
-    expect((rdap as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3); // duplicates looked up once
+    expect(r.calls.filter((u) => u.includes("data.iana.org"))).toHaveLength(1);
+    expect(r.calls.some((u) => u.includes("rdap.org"))).toBe(false);
+    expect(r.calls).toContain("https://rdap.registry.in/domain/good.in");
+    expect(r.calls.filter((u) => u.endsWith("/domain/good.in"))).toHaveLength(1); // duplicates (any case) once
     const rows = await loadDomains(db);
-    expect(rows.find((r) => r.domain === "good.in")).toMatchObject({
+    expect(rows.find((x) => x.domain === "good.in")).toMatchObject({
       expires: "2027-01-09T13:50:49.000Z",
       error: null,
     });
-    expect(rows.find((r) => r.domain === "gone.in")).toMatchObject({
+    expect(rows.find((x) => x.domain === "gone.in")).toMatchObject({
       expires: null,
       error: "RDAP HTTP 404",
     });
+  });
 
-    // Within a day: nothing is looked up again.
-    expect(
-      await refreshDomains(db, ["good.in"], new Date(NOW.getTime() + 3_600_000), rdap),
-    ).toEqual([]);
-    expect((rdap as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+  it("a successful lookup is kept for a day; a failed one is retried on the next run", async () => {
+    const db = createFakeD1();
+    await refreshDomains(db, ["good.in", "gone.in"], NOW, registry().f);
+    const later = registry();
+    const hour = new Date(NOW.getTime() + 3_600_000);
+    await refreshDomains(db, ["good.in", "gone.in"], hour, later.f);
+    expect(later.calls.filter((u) => u.includes("/domain/"))).toEqual([
+      "https://rdap.registry.in/domain/gone.in",
+    ]);
+    const nothing = registry();
+    expect(await refreshDomains(db, ["good.in"], hour, nothing.f)).toEqual([]);
+    expect(nothing.calls).toEqual([]); // no bootstrap either when nothing is due
+  });
 
-    // A day later the registry is down: the error is recorded but the known date survives.
+  it("a registry or bootstrap outage is reported, and a known date survives it", async () => {
+    const db = createFakeD1();
+    await refreshDomains(db, ["good.in"], NOW, registry().f);
     const down = vi.fn(async () => new Response("", { status: 503 })) as unknown as typeof fetch;
-    await refreshDomains(db, ["good.in"], new Date(NOW.getTime() + DOMAIN_REFRESH_MS), down);
-    expect((await loadDomains(db)).find((r) => r.domain === "good.in")).toMatchObject({
-      expires: "2027-01-09T13:50:49.000Z",
-      error: "RDAP HTTP 503",
+    const errors = await refreshDomains(
+      db,
+      ["good.in"],
+      new Date(NOW.getTime() + DOMAIN_REFRESH_MS),
+      down,
+    );
+    expect(errors).toEqual(["good.in: RDAP bootstrap HTTP 503"]);
+    expect((await loadDomains(db)).find((x) => x.domain === "good.in")).toMatchObject({
+      expires: "2027-01-09T13:50:49.000Z", // still known
+      error: "RDAP bootstrap HTTP 503",
     });
+    const garbled = vi.fn(async () => Response.json({ nope: 1 })) as unknown as typeof fetch;
+    expect(await refreshDomains(createFakeD1(), ["good.in"], NOW, garbled)).toEqual([
+      "good.in: RDAP bootstrap list was unreadable",
+    ]);
     expect(await refreshDomains(db, [], NOW, down)).toEqual([]);
   });
 

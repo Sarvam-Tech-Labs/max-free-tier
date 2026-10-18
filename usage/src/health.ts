@@ -46,11 +46,39 @@ export interface DomainRow {
 
 export const DOMAIN_REFRESH_MS = 24 * 3_600_000;
 
-/** RDAP bootstrap service: redirects to the registry that is authoritative for the TLD. */
-const RDAP = "https://rdap.org/domain/";
+/**
+ * IANA's official list of which registry answers RDAP for each TLD. The rdap.org redirector is not used: it answers 403 to
+ * Cloudflare's network (FlareWatch, in the same account, asks the registry directly for the same reason).
+ */
+const BOOTSTRAP = "https://data.iana.org/rdap/dns.json";
 
 interface RdapDomain {
   events?: Array<{ eventAction?: string; eventDate?: string }>;
+}
+
+type Services = Array<[string[], string[]]>;
+
+/** The https RDAP base URL of the registry for this domain's TLD. `cache` holds the list for the whole batch. */
+async function registryFor(
+  domain: string,
+  f: typeof fetch,
+  cache: { services?: Services },
+): Promise<string> {
+  if (!cache.services) {
+    const res = await f(BOOTSTRAP, {
+      headers: { Accept: "application/json", "User-Agent": "max-free-tier" },
+    });
+    if (!res.ok) throw new Error(`RDAP bootstrap HTTP ${res.status}`);
+    const body = (await res.json()) as { services?: Services };
+    if (!Array.isArray(body.services)) throw new Error("RDAP bootstrap list was unreadable");
+    cache.services = body.services;
+  }
+  const tld = domain.split(".").pop() ?? "";
+  const server = cache.services
+    .find(([tlds]) => tlds.includes(tld))?.[1]
+    .find((u) => u.startsWith("https://"));
+  if (!server) throw new Error(`no RDAP service for .${tld}`);
+  return server.endsWith("/") ? server : `${server}/`;
 }
 
 /**
@@ -67,10 +95,14 @@ export async function refreshDomains(
 ): Promise<string[]> {
   if (domains.length === 0) return [];
   const known = new Map((await loadDomains(db)).map((d) => [d.domain, d]));
-  const due = [...new Set(domains)].filter((d) => {
+  const due = [...new Set(domains.map((d) => d.toLowerCase()))].filter((d) => {
     const row = known.get(d);
-    return !row || now.getTime() - Date.parse(row.checkedAt) >= DOMAIN_REFRESH_MS;
+    // A failed lookup is retried on the next run, not tomorrow.
+    return (
+      !row || row.error !== null || now.getTime() - Date.parse(row.checkedAt) >= DOMAIN_REFRESH_MS
+    );
   });
+  const cache: { services?: Services } = {};
   const errors: string[] = [];
   const at = now.toISOString();
   const upsert = db.prepare(
@@ -81,8 +113,12 @@ export async function refreshDomains(
     let expires: string | null = null;
     let error: string | null = null;
     try {
-      const res = await fetchImpl(RDAP + encodeURIComponent(domain), {
-        headers: { Accept: "application/rdap+json" },
+      const base = await registryFor(domain, fetchImpl, cache);
+      const res = await fetchImpl(`${base}domain/${encodeURIComponent(domain)}`, {
+        headers: {
+          Accept: "application/rdap+json, application/json",
+          "User-Agent": "max-free-tier",
+        },
       });
       if (!res.ok) throw new Error(`RDAP HTTP ${res.status}`);
       const body = (await res.json()) as RdapDomain;
