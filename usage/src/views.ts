@@ -18,6 +18,7 @@ import type { DomainRow, MonitorState, UptimeView } from "./health";
 import type { ClientInfo, Ledger, LedgerProvider, Meter, Platform } from "./ledger";
 import { escapeHtml as esc } from "./page";
 import { KIND_LABEL, KINDS, type ProviderKind } from "./providers";
+import { refreshRows } from "./refresh";
 import type { AlertRow, CheckRun } from "./store";
 import { icon, shell } from "./theme";
 import { daysUntil, formatInstant, nextReset, relative, zoneLabel } from "./time";
@@ -515,6 +516,43 @@ function statusStrip(a: Account, d: PageData): string {
   return `<section class="card" aria-label="Status"><div class="grid stats" style="margin:0">${siteCard}${domainCard}${usageCard}</div>${siteTable}</section>`;
 }
 
+/** "in 12 min" is rounded; the live countdown beside it is not. */
+function refreshCard(a: Account, cards: readonly LedgerProvider[], d: PageData): string {
+  const names = [
+    ...new Set(
+      cards.filter((c) => c.platform !== "cloudflare").map((c) => PLATFORM_NAME[c.platform]),
+    ),
+  ];
+  const registry = a.clients
+    .flatMap((c) => c.platforms.map(platformOf))
+    .filter((p): p is Platform => p !== undefined && p !== "cloudflare")
+    .map((p) => PLATFORM_NAME[p]);
+  const rows = refreshRows({
+    runs: d.runs,
+    domains: d.health.domains.filter((r) => a.clients.some((c) => c.domains.includes(r.domain))),
+    now: d.health.now,
+    cloudflare: cards.some((c) => c.platform === "cloudflare"),
+    platforms: [...new Set([...names, ...registry])],
+    sites: sitesOf(a, d.health).length > 0,
+    domainCount: domainsOf(a, d.health).length,
+  });
+  if (rows.length === 0) return "";
+  const body = rows
+    .map((r) => {
+      const next = formatInstant(r.nextAt, d.tz);
+      const left = Math.max(0, Date.parse(r.nextAt) - d.health.now.getTime());
+      const last = r.lastAt
+        ? `<div title="${esc(formatInstant(r.lastAt, d.tz).utc)}">${esc(relative(r.lastAt, d.health.now))}${r.failed ? ` ${badge("had errors", "warn")}` : ""}</div><div class="muted small" title="${esc(r.note)}">${esc(formatInstant(r.lastAt, d.tz).text)}</div>`
+        : r.period
+          ? `<span class="muted">Live</span>`
+          : `<span class="muted">Not yet</span>`;
+      const timer = `<div class="cd" data-left="${left}"${r.period ? ` data-every="${r.period}"` : " data-reload"}>in ${esc(relative(r.nextAt, d.health.now).replace(/^in /, ""))}</div>`;
+      return `<tr><td>${esc(r.label)}</td><td>${badge(r.every, "mute")}</td><td>${last}</td><td>${timer}<div class="muted small" title="${esc(next.utc)}">${esc(next.text)}</div></td></tr>`;
+    })
+    .join("");
+  return `<section class="card" aria-label="Data refresh"><div class="section-head"><h2>Data refresh</h2><span class="grow"></span><span class="muted small">Timers count down live; the page reloads itself after a refresh</span></div><div class="table-wrap"><table class="compact"><thead><tr><th>Data</th><th>Refreshes</th><th>Last refreshed</th><th>Next refresh</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
+}
+
 export function renderConsumptionPage(d: PageData, email?: string): string {
   const accounts = accountsOf(d.ledger);
   if (accounts.length === 0) {
@@ -574,7 +612,7 @@ export function renderConsumptionPage(d: PageData, email?: string): string {
     .join("");
   const who = `<section class="card who"><div class="card-head" style="margin:0"><button type="button" class="btn icon-only" data-sidebar-toggle aria-controls="accounts" aria-expanded="true" aria-label="Show or hide the account list" title="Accounts">${icon("panel", 16)}</button><div class="grow"><div class="muted small">Account</div><h1>${esc(title)}</h1></div></div><div class="chips pad">${projects}</div>${selected.email === "" ? `<p class="muted small" style="margin:12px 0 0">These clients have no email in the registry. Add <code>email:</code> to group them under their owner.</p>` : ""}</section>`;
 
-  const body = `<div class="layout">${sidebar(accounts, selected, d)}<div class="stack" style="min-width:0">${who}${statusStrip(selected, d)}${sections || `<div class="card empty">No platform is on file for this account.</div>`}${unmonitored.length > 0 ? `<p class="muted small">Also uses ${unmonitored.map(esc).join(", ")}, which are not monitored.</p>` : ""}</div></div>`;
+  const body = `<div class="layout">${sidebar(accounts, selected, d)}<div class="stack" style="min-width:0">${who}${statusStrip(selected, d)}${refreshCard(selected, cards, d)}${sections || `<div class="card empty">No platform is on file for this account.</div>`}${unmonitored.length > 0 ? `<p class="muted small">Also uses ${unmonitored.map(esc).join(", ")}, which are not monitored.</p>` : ""}</div></div>`;
   return page(d, title, "consumption", body);
 }
 

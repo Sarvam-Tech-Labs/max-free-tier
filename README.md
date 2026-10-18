@@ -58,7 +58,8 @@ One password-protected website, two tabs, in the Sarvam Tech Labs design system:
   exact next reset, and the history of every change we detect to the free tiers, with the exact lines.
 - **Consumption** — a collapsible sidebar of owner emails. Pick one to see all their platforms (Cloudflare, Vercel,
   Resend, GitHub, Supabase), how much of each limit is consumed, the exact date and time it resets (IST, UTC on hover) and
-  how often it resets, plus whether their sites are up and when their domains expire.
+  how often it resets, plus whether their sites are up and when their domains expire. A **Data refresh** card says how
+  often each kind of data is refreshed (hourly, every minute, daily), when it last was, and counts down live to the next.
 
 - **Tokens** — **Connect a platform** yourself, right on the site: paste a token and say which email it belongs to; the
   account is found from the token. An email has one account per platform and its projects run on them, matching how the

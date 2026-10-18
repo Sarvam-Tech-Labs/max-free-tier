@@ -128,6 +128,7 @@ input[type=search]:focus,select:focus{outline:none;border-color:var(--accent-pri
 .btn.small{padding:6px 12px;font-size:.75rem}
 .btn[disabled]{opacity:.5;cursor:not-allowed}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
+.cd{font-variant-numeric:tabular-nums;font-weight:600;color:var(--text-primary)}
 
 /* dialog + form */
 dialog{background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:var(--radius-lg);padding:0;width:min(560px,calc(100% - 32px));box-shadow:0 10px 15px rgba(0,0,0,.4)}
@@ -298,6 +299,22 @@ const SCRIPT = `
       b.disabled=true;const r=await call('/api/tokens/'+b.dataset.tokenDelete,'DELETE');
       if(r.ok)location.reload();else{b.disabled=false;say(r.error||'Could not delete.',false)}
     }));
+  }
+  const cds=[...document.querySelectorAll('.cd')];
+  if(cds.length){
+    const t0=Date.now(),fmt=ms=>{const s=Math.max(0,Math.floor(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),r=s%60,p=n=>String(n).padStart(2,'0');return h?h+'h '+p(m)+'m '+p(r)+'s':m?m+'m '+p(r)+'s':r+'s'};
+    let reloaded=false;
+    const tick=()=>{
+      const spent=Date.now()-t0;
+      cds.forEach(e=>{
+        let left=Number(e.dataset.left)-spent;
+        if(e.dataset.every){const p=Number(e.dataset.every);left=((left%p)+p)%p||p}
+        e.textContent=left>0?'in '+fmt(left):'refreshing…';
+      });
+      // A scheduled refresh has had a minute to finish: show the new numbers once. (The per-minute uptime timer loops instead.)
+      if(!reloaded&&cds.some(e=>e.hasAttribute('data-reload')&&Number(e.dataset.left)-spent<=-60000)){reloaded=true;location.reload()}
+    };
+    tick();setInterval(tick,1000);
   }
   const t=document.getElementById('limits');if(!t)return;
   const rows=[...t.querySelectorAll('tbody tr')],count=document.getElementById('count'),empty=document.getElementById('none');

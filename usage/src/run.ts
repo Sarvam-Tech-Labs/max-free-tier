@@ -236,7 +236,7 @@ async function finish(
 }
 
 /** Cron that runs the other-platform checks; its own invocation, so it gets its own 50-subrequest budget. */
-export const PROVIDERS_CRON = "30 * * * *";
+export { PROVIDERS_CRON } from "./refresh";
 
 /**
  * Other-platform checks (providers.ts): GitHub, Resend, Supabase, Vercel. Same alert levels, de-duplication and
