@@ -4,7 +4,7 @@ node_modules/
 .dev.vars
 .wrangler/
 
-# The REAL client registry lives in a private repo (repository variable REGISTRY_REPO), never here.
+# The REAL client registry lives in a private repo (see docs/SETUP.md), never here.
 clients.yaml
 private/
 # Generated at deploy time from the private registry. Never commit.

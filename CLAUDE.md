@@ -4,9 +4,12 @@ Agency ops hub for client sites on free tiers. Read `README.md` first. This file
 
 ## Ground rules
 - **This repo is public. Client data never goes in it.** The real registry lives in a private repo
-  (`vars.REGISTRY_REPO`); `clients.yaml` and generated configs are gitignored and CI fails if either is committed.
+  (it calls the reusable deploy workflows here); `clients.yaml` and generated configs are gitignored and CI fails if either is committed.
   Locally, keep the private registry checked out next to this repo (`pnpm sync` reads `../<registry>/clients.yaml` —
   adjust the path in `package.json`) and never commit after running it: `git checkout uptime/packages/config` resets.
+- **Deploys never run in this public repo.** `uptime.yml` / `usage.yml` are reusable (`workflow_call`) and run from the
+  private registry repo's `deploy.yml` (`secrets: inherit`): wrangler prints vars (client names, account ids) and public
+  Actions logs are public. Never add a push/dispatch trigger to them here.
 - **No secrets in git.** Tokens live in GitHub Actions secrets and Worker secrets.
 - **Reuse before building.** FlareWatch and usage-guard-collector are vendored `git subtree`s; urlwatch is installed.
   Fix gaps upstream-first (`docs/UPSTREAM.md`); keep our own code to the registry, generator and glue.

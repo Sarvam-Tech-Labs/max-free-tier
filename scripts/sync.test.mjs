@@ -126,3 +126,12 @@ test("org: optional; names the status page, sets the alert time zone, url must b
   assert.ok(files["uptime/packages/config/src/worker.ts"].includes('"timeZone": "Asia/Kolkata"'));
   assert.ok(!render(one)["uptime/packages/config/src/public.ts"].includes('"links"'));
 });
+
+test("org.watchdog: optional dead-man ping, monitored every minute in its own group; must be https", () => {
+  const one = load(yaml("  - { id: a, name: A, status: live }"));
+  assert.ok(!render(one)["uptime/packages/config/src/worker.ts"].includes("watchdog"));
+  const files = render(one, loadOrg("org: { name: X, watchdog: https://hc-ping.com/abc }"));
+  assert.match(files["uptime/packages/config/src/worker.ts"], /"id": "watchdog",[\s\S]*"target": "https:\/\/hc-ping\.com\/abc"/);
+  assert.match(files["uptime/packages/config/src/public.ts"], /"Monitoring": \[\s*"watchdog"\s*\]/);
+  assert.throws(() => loadOrg("org: { watchdog: http://x }"), /watchdog must be an https URL/);
+});

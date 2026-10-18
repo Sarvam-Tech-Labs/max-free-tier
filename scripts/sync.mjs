@@ -1,5 +1,5 @@
 // Generates every monitoring config from a client registry, so the registry is the only thing anyone edits.
-// Keep the real registry in a PRIVATE repo (repository variable REGISTRY_REPO); the deploy workflows check it out and
+// Keep the real registry in a PRIVATE repo whose deploy workflow calls the reusable ones here; they check it out and
 // run this, so client data only ever exists inside a CI run — it is never committed to this public repo.
 //   node scripts/sync.mjs --registry private/clients.yaml              write the generated files (deploy time)
 //   node scripts/sync.mjs --registry clients.example.yaml --dry-run    validate + render only (public CI)
@@ -77,7 +77,17 @@ export function loadOrg(text) {
   if (org === undefined || org === null) return { ...DEFAULT_ORG };
   if (typeof org !== "object" || Array.isArray(org)) throw new Error("clients.yaml: `org` must be a mapping");
   if (org.url !== undefined && !/^https:\/\//.test(org.url)) throw new Error("clients.yaml: org.url must be an https URL");
+  if (org.watchdog !== undefined && !/^https:\/\//.test(org.watchdog)) throw new Error("clients.yaml: org.watchdog must be an https URL");
   return { ...DEFAULT_ORG, ...org };
+}
+
+/**
+ * Dead-man's switch outside Cloudflare: FlareWatch requests `org.watchdog` (e.g. a Healthchecks.io ping URL) every
+ * minute, so the outside service alerts when those requests stop — FlareWatch or Cloudflare itself being down.
+ */
+export function watchdog(org) {
+  if (!org.watchdog) return [];
+  return [{ id: "watchdog", name: "Watchdog ping (outside Cloudflare)", method: "GET", target: org.watchdog, expectedCodes: [200], timeout: 10000 }];
 }
 
 const live = (clients) => clients.filter((c) => c.status === "live");
@@ -158,14 +168,14 @@ export function render(clients, org = DEFAULT_ORG) {
       // Channels come from the FLAREWATCH_WEBHOOKS secret (built from TELEGRAM_* in .github/workflows/uptime.yml).
       // 5+ alerts in one run (e.g. a shared outage) arrive as one message.
       notification: { summaryAfter: 5, timeZone: org.timeZone },
-      monitors: monitors(clients),
+      monitors: [...monitors(clients), ...watchdog(org)],
     }),
     "uptime/packages/config/src/public.ts": ts("pageConfig", "PageConfig", {
       title: `${org.name} — Status`,
       // Client domains are not public information; sign in to see the page.
       visibility: "private",
       ...(org.url ? { links: [{ label: org.name, link: org.url }] } : {}),
-      group: groups(clients),
+      group: { ...groups(clients), ...(org.watchdog ? { Monitoring: ["watchdog"] } : {}) },
     }),
     "usage/wrangler.generated.jsonc": `${HEADER}${biomeJson(usageConfig(clients, read("usage/wrangler.jsonc")))}\n`,
   };

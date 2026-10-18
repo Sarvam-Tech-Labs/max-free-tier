@@ -30,13 +30,15 @@ watch/urls.yaml ─────────────▶ GitHub Actions ──
 
 ## Quick start
 
-1. **Use this repo** — fork it (or "Use this template").
-2. **Create a private registry repo** with a `clients.yaml` — copy [`clients.example.yaml`](clients.example.yaml).
+1. **Create a private registry repo** with a `clients.yaml` — copy [`clients.example.yaml`](clients.example.yaml) — and
+   a 15-line deploy workflow that calls this repo's reusable workflows ([`docs/SETUP.md`](docs/SETUP.md#2-your-private-registry-repo)).
+   Deploys run and log only there, so client data never shows up in public Actions logs.
    Validate locally: `pnpm install && node scripts/sync.mjs --registry path/to/clients.yaml --dry-run`.
-3. **Make a Telegram bot** (@BotFather) and add it to a group.
-4. **Add the variable and secrets** listed in [`docs/SETUP.md`](docs/SETUP.md) (Cloudflare tokens, Telegram, registry).
-5. **Run the deploy workflows** — `Deploy uptime monitor` and `Deploy usage collector`. The free-tier terms watch runs
-   daily on its own.
+2. **Make a Telegram bot** (@BotFather) and add it to a group.
+3. **Add the secrets** to the private repo (Cloudflare tokens, Telegram) and, recommended, a free Healthchecks.io
+   watchdog so you also hear about it when Cloudflare itself is down.
+4. **Run `Deploy max-free-tier`** in the private repo. To also get the daily free-tier terms watch, fork this repo and
+   add the two Telegram secrets to the fork.
 
 Full walkthrough: [`docs/SETUP.md`](docs/SETUP.md).
 

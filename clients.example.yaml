@@ -1,5 +1,5 @@
-# Example client registry. The REAL one is private: keep it in a separate private repo (repository variable
-# REGISTRY_REPO, e.g. your-org/max-free-tier-clients) — the deploy workflows check it out at run time and generate configs from it, so
+# Example client registry. The REAL one is private: keep it in a separate private repo
+# (e.g. your-org/max-free-tier-clients) whose deploy workflow calls this repo's reusable workflows — they generate configs from it, so
 # client names, account ids and domains never land in this public repo.
 #
 # Validate this file:  node scripts/sync.mjs --registry clients.example.yaml --dry-run
@@ -25,10 +25,14 @@
 # No secrets in a registry — tokens live in GitHub Actions secrets / Worker secrets.
 
 # Optional: names the status page and sets the time zone used in alert messages.
+# watchdog: a dead-man's-switch URL OUTSIDE Cloudflare (e.g. a free Healthchecks.io check, period 1 min, grace 5 min)
+#           that FlareWatch requests every minute. When FlareWatch or Cloudflare goes down the requests stop and that
+#           service alerts you — the one failure FlareWatch cannot report itself.
 org:
   name: Acme Agency
   url: https://acme-agency.example
   timeZone: Asia/Kolkata
+  watchdog: https://hc-ping.com/00000000-0000-0000-0000-000000000000
 
 clients:
   - id: acme
