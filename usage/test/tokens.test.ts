@@ -37,7 +37,12 @@ const base = (over: Partial<Env> = {}): Env => ({
 
 /** Platform stub: GitHub answers with minutes (and an expiry header), Vercel with an unblocked team. */
 function platforms(
-  over: { github?: () => Response; vercel?: () => Response; telegram?: number } = {},
+  over: {
+    github?: () => Response;
+    vercel?: () => Response;
+    telegram?: number;
+    githubExpiry?: string;
+  } = {},
 ) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const f = vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -47,7 +52,12 @@ function platforms(
         over.github?.() ??
         Response.json(
           { usageItems: [{ product: "actions", unitType: "minutes", grossQuantity: 100 }] },
-          { headers: { "github-authentication-token-expiration": "2026-11-17 11:07:28 UTC" } },
+          {
+            headers: {
+              "github-authentication-token-expiration":
+                over.githubExpiry ?? "2026-11-17 11:07:28 UTC",
+            },
+          },
         )
       );
     }
@@ -505,15 +515,36 @@ describe("hourly run uses and tracks the tokens", () => {
     expect(s.error).toContain("could not be decrypted");
   });
 
-  it("a failing token alerts only after two runs in a row, then at most daily; recovery clears it", async () => {
-    const e = base();
-    await handleTokenApi(
+  const far = { githubExpiry: "2027-06-01 00:00:00 UTC" };
+  const connectGithub = async (e: Env) =>
+    handleTokenApi(
       api("/api/tokens", "POST", { name: "GH_ACME", value: SECRET }),
       e,
       NOW,
-      platforms().f,
+      platforms(far).f,
     );
-    const down = () => platforms({ github: () => new Response("", { status: 401 }) });
+
+  it("a rejected token (401/403) alerts on the very first failed check, in plain words, then at most daily", async () => {
+    const e = base();
+    await connectGithub(e);
+    const rejected = () => platforms({ ...far, github: () => new Response("", { status: 401 }) });
+    const run = async (iso: string, p = rejected()) => {
+      await runProviders(e, new Date(iso), p.f);
+      return p.sent();
+    };
+    const first = await run("2026-10-18T12:30:00Z");
+    expect(first).toHaveLength(1); // no waiting for a second failure
+    expect(first[0]).toContain("GH_ACME (Acme · GitHub) was rejected: github: HTTP 401");
+    expect(first[0]).toContain("probably expired or been revoked");
+    expect(first[0]).not.toContain(SECRET);
+    expect(await run("2026-10-18T13:30:00Z")).toEqual([]); // cooldown
+    expect(await run("2026-10-19T12:31:00Z")).toHaveLength(1); // daily while it lasts
+  });
+
+  it("any other failure waits for two runs in a row (one blip is not a dead token); recovery is announced once", async () => {
+    const e = base();
+    await connectGithub(e);
+    const down = () => platforms({ ...far, github: () => new Response("", { status: 503 }) });
     const run = async (iso: string, p = down()) => {
       await runProviders(e, new Date(iso), p.f);
       return p.sent();
@@ -523,23 +554,37 @@ describe("hourly run uses and tracks the tokens", () => {
     expect(second).toHaveLength(1);
     expect(second[0]).toContain("GH_ACME (Acme · GitHub) keeps failing");
     expect(second[0]).toContain("last worked 2026-10-18");
-    expect(second[0]).not.toContain(SECRET);
+    expect(second[0]).not.toContain("rejected");
     expect(await run("2026-10-18T14:30:00Z")).toEqual([]); // cooldown
-    const nextDay = await run("2026-10-19T14:31:00Z");
-    expect(nextDay).toHaveLength(1);
-    // Recovery: status ok, counters reset, and the next failure starts counting again.
-    await run("2026-10-19T15:30:00Z", platforms());
+    expect(await run("2026-10-19T14:31:00Z")).toHaveLength(1);
+
+    // It works again: one "working again" note, counters reset, and the next failure starts counting afresh.
+    const back = await run("2026-10-19T15:30:00Z", platforms(far));
+    expect(back).toHaveLength(1);
+    expect(back[0]).toContain("✅ Working again");
+    expect(back[0]).toContain("GH_ACME (Acme · GitHub) is working again");
     expect((await loadTargetStatus(e.USAGE))[0]).toMatchObject({
       ok: true,
       failCount: 0,
       alertedAt: null,
     });
-    expect(await run("2026-10-19T16:30:00Z")).toEqual([]);
+    expect(await run("2026-10-19T16:30:00Z", platforms(far))).toEqual([]); // not repeated
+    expect(await run("2026-10-19T17:30:00Z")).toEqual([]); // a fresh blip again waits
     expect(
       (await recentAlerts(e.USAGE)).filter(
         (a) => a.source === "tokens" && a.text.includes("keeps failing"),
       ),
     ).toHaveLength(2);
+  });
+
+  it("a token that failed but was never alerted about recovers silently", async () => {
+    const e = base();
+    await connectGithub(e);
+    const blip = platforms({ ...far, github: () => new Response("", { status: 503 }) });
+    await runProviders(e, new Date("2026-10-18T12:30:00Z"), blip.f); // one failure: no alert
+    const ok = platforms(far);
+    await runProviders(e, new Date("2026-10-18T13:30:00Z"), ok.f);
+    expect(ok.sent()).toEqual([]);
   });
 
   it("an undelivered token alert is retried and not marked as sent", async () => {
@@ -569,7 +614,47 @@ describe("hourly run uses and tracks the tokens", () => {
     expect((await loadTargetStatus(e.USAGE))[0]?.alertedAt).toBe(NOW.toISOString());
   });
 
-  it("an expiring or expired token alerts within 14 days, at most daily, and a new token resets it", async () => {
+  it("an expiring token is announced once at 30, 14, 7, 3 and 1 days, then daily once expired; a new token resets it", async () => {
+    const e = base();
+    const p = platforms();
+    await handleTokenApi(
+      api("/api/tokens", "POST", {
+        name: "VERCEL_BETA",
+        value: "vercel-token-1",
+        expires: "2026-11-15",
+      }),
+      e,
+      NOW,
+      p.f,
+    );
+    await handleTokenApi(
+      api("/api/tokens", "POST", { name: "GH_ACME", value: SECRET, expires: "2027-06-01" }),
+      e,
+      NOW,
+      p.f,
+    );
+    const at = async (iso: string) => {
+      const x = platforms();
+      await tokenAlerts(e, new Date(iso), x.f);
+      return x.sent();
+    };
+    // 28 days out: first warning (the 30-day step). The far-away GitHub token is not mentioned.
+    const first = await at("2026-10-18T11:00:00Z");
+    expect(first).toHaveLength(1);
+    expect(first[0]).toContain("VERCEL_BETA expires in 29 days (2026-11-15)");
+    expect(first[0]).not.toContain("GH_ACME");
+    expect(await at("2026-10-18T20:00:00Z")).toEqual([]); // same step: not again
+    expect(await at("2026-10-28T11:00:00Z")).toEqual([]); // 19 days: still the 30-day step
+    expect((await at("2026-11-02T11:00:00Z"))[0]).toContain("expires in 14 days"); // the 14-day step
+    expect(await at("2026-11-03T11:00:00Z")).toEqual([]);
+    expect((await at("2026-11-09T11:00:00Z"))[0]).toContain("expires in 7 days"); // 7
+    expect(await at("2026-11-12T11:00:00Z")).toEqual([]); // 4 days left: still the 7-day step
+    expect((await at("2026-11-13T11:00:00Z"))[0]).toContain("expires in 3 days"); // the 3-day step
+    expect(await at("2026-11-14T11:00:00Z")).toEqual([]); // 2 days: still the 3-day step
+    expect((await at("2026-11-15T11:00:00Z"))[0]).toContain("expires in 1 day (2026-11-15)"); // the 1-day step
+  });
+
+  it("an expired token is announced on the day it expires and then once a day; replacing it resets everything", async () => {
     const e = base();
     const p = platforms();
     await handleTokenApi(
@@ -582,23 +667,15 @@ describe("hourly run uses and tracks the tokens", () => {
       NOW,
       p.f,
     );
-    await handleTokenApi(
-      api("/api/tokens", "POST", { name: "GH_ACME", value: SECRET, expires: "2027-06-01" }),
-      e,
-      NOW,
-      p.f,
-    );
-    const a = platforms();
-    await tokenAlerts(e, NOW, a.f);
-    expect(a.sent()).toHaveLength(1);
-    expect(a.sent()[0]).toContain("VERCEL_BETA expires in 8 days (2026-10-25)");
-    expect(a.sent()[0]).not.toContain("GH_ACME"); // far away
-    const b = platforms();
-    await tokenAlerts(e, new Date("2026-10-18T20:00:00Z"), b.f);
-    expect(b.sent()).toEqual([]); // cooldown
-    const c = platforms();
-    await tokenAlerts(e, new Date("2026-10-26T12:00:00Z"), c.f);
-    expect(c.sent()[0]).toContain("VERCEL_BETA expired on 2026-10-25");
+    const at = async (iso: string) => {
+      const x = platforms();
+      await tokenAlerts(e, new Date(iso), x.f);
+      return x.sent();
+    };
+    expect((await at("2026-10-24T12:00:00Z"))[0]).toContain("expires in 2 days");
+    expect((await at("2026-10-26T00:30:00Z"))[0]).toContain("VERCEL_BETA expired on 2026-10-25");
+    expect(await at("2026-10-26T12:00:00Z")).toEqual([]); // reminded within the day
+    expect((await at("2026-10-27T01:00:00Z"))[0]).toContain("VERCEL_BETA expired on 2026-10-25"); // daily
     // Replacing the token clears the alert marker and the date.
     await handleTokenApi(
       api("/api/tokens", "POST", {
@@ -610,7 +687,7 @@ describe("hourly run uses and tracks the tokens", () => {
       NOW,
       p.f,
     );
-    expect((await listTokens(e.USAGE)).find((t) => t.name === "VERCEL_BETA")).toMatchObject({
+    expect((await listTokens(e.USAGE)).find((x) => x.name === "VERCEL_BETA")).toMatchObject({
       expiryAlertedAt: null,
       expiresAt: "2027-10-01T23:59:59.000Z",
     });

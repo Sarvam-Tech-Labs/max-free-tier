@@ -14,6 +14,11 @@ export const COLLECT_CRON = "0 * * * *";
 export const PROVIDERS_CRON = "30 * * * *";
 
 const MINUTE = 60_000;
+/** An hourly run older than this has missed its slot; a daily lookup older than a day and a bit has too. */
+const OVERDUE_HOURLY_MS = 90 * MINUTE;
+const OVERDUE_DAILY_MS = 30 * 60 * MINUTE;
+const late = (at: string | null, now: Date, ms: number): boolean =>
+  at !== null && now.getTime() - Date.parse(at) > ms;
 
 const minuteOf = (cron: string): number => Number(cron.split(" ")[0]);
 
@@ -56,6 +61,8 @@ export interface RefreshRow {
   failed: boolean;
   /** What the last run reported (shown on hover). */
   note: string;
+  /** The last run is older than a missed cycle: the schedule is not being kept. */
+  overdue: boolean;
   /** ISO time of the next run. */
   nextAt: string;
   /** Re-runs every `period` ms: the countdown loops by itself instead of reloading the page. */
@@ -86,6 +93,7 @@ export function refreshRows(i: RefreshInput): RefreshRow[] {
       lastAt: r?.at ?? null,
       failed: r ? !r.ok : false,
       note: r?.summary ?? "",
+      overdue: late(r?.at ?? null, i.now, OVERDUE_HOURLY_MS),
       nextAt: nextHourlyAt(minuteOf(COLLECT_CRON), i.now).toISOString(),
     });
   }
@@ -98,6 +106,7 @@ export function refreshRows(i: RefreshInput): RefreshRow[] {
       lastAt: r?.at ?? null,
       failed: r ? !r.ok : false,
       note: r?.summary ?? "",
+      overdue: late(r?.at ?? null, i.now, OVERDUE_HOURLY_MS),
       nextAt: nextHourlyAt(minuteOf(PROVIDERS_CRON), i.now).toISOString(),
     });
   }
@@ -109,6 +118,7 @@ export function refreshRows(i: RefreshInput): RefreshRow[] {
       lastAt: null,
       failed: false,
       note: "Checked continuously; the site shows the latest state whenever it loads.",
+      overdue: false,
       nextAt: nextMinuteAt(i.now).toISOString(),
       period: MINUTE,
     });
@@ -122,6 +132,9 @@ export function refreshRows(i: RefreshInput): RefreshRow[] {
       lastAt: dates.length > 0 ? new Date(Math.max(...dates)).toISOString() : null,
       failed: i.domains.some((r) => r.error !== null),
       note: i.domains.find((r) => r.error !== null)?.error ?? "",
+      overdue:
+        dates.length > 0 &&
+        late(new Date(Math.max(...dates)).toISOString(), i.now, OVERDUE_DAILY_MS),
       nextAt: nextDomainLookup(i.domains, i.now).toISOString(),
     });
   }

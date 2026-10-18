@@ -22,7 +22,12 @@ import { refreshRows } from "./refresh";
 import type { AlertRow, CheckRun } from "./store";
 import { icon, shell } from "./theme";
 import { daysUntil, formatInstant, nextReset, relative, zoneLabel } from "./time";
-import type { RequiredToken, TokenMeta, TokensOverview } from "./tokens";
+import {
+  EXPIRY_WARN_DAYS,
+  type RequiredToken,
+  type TokenMeta,
+  type TokensOverview,
+} from "./tokens";
 
 /** Uptime (FlareWatch) and domain expiry: absent/empty → those cards say so. */
 export interface Health {
@@ -542,7 +547,7 @@ function refreshCard(a: Account, cards: readonly LedgerProvider[], d: PageData):
       const next = formatInstant(r.nextAt, d.tz);
       const left = Math.max(0, Date.parse(r.nextAt) - d.health.now.getTime());
       const last = r.lastAt
-        ? `<div title="${esc(formatInstant(r.lastAt, d.tz).utc)}">${esc(relative(r.lastAt, d.health.now))}${r.failed ? ` ${badge("had errors", "warn")}` : ""}</div><div class="muted small" title="${esc(r.note)}">${esc(formatInstant(r.lastAt, d.tz).text)}</div>`
+        ? `<div title="${esc(formatInstant(r.lastAt, d.tz).utc)}">${esc(relative(r.lastAt, d.health.now))}${r.overdue ? ` ${badge("overdue", "bad")}` : ""}${r.failed ? ` ${badge("had errors", "warn")}` : ""}</div><div class="muted small" title="${esc(r.note)}">${esc(formatInstant(r.lastAt, d.tz).text)}</div>`
         : r.period
           ? `<span class="muted">Live</span>`
           : `<span class="muted">Not yet</span>`;
@@ -664,9 +669,13 @@ function expiryCell(m: TokenMeta | undefined, d: PageData): string {
   if (!m?.expiresAt) return `<span class="muted">No expiry set</span>`;
   const days = daysUntil(m.expiresAt, d.health.now);
   const t = formatInstant(m.expiresAt, d.tz);
-  const kind = days < 0 ? "bad" : days <= 14 ? "warn" : "";
+  const kind = days < 0 ? "bad" : days <= EXPIRY_WARN_DAYS ? "warn" : "";
   const label =
-    days < 0 ? "Expired" : days <= 14 ? `Expires in ${days} day${days === 1 ? "" : "s"}` : "";
+    days < 0
+      ? "Expired"
+      : days <= EXPIRY_WARN_DAYS
+        ? `Expires in ${days} day${days === 1 ? "" : "s"}`
+        : "";
   return `<div title="${esc(t.utc)}">${esc(t.text.split(", ")[0] ?? "")}</div><div class="small ${kind ? "" : "muted"}">${kind ? badge(label, kind) : esc(relative(m.expiresAt, d.health.now))}</div>`;
 }
 
@@ -697,7 +706,7 @@ function tokenAttention(a: Account, o: TokensOverview, d: PageData): boolean {
     const s = stateOf(r.name, o);
     if (s.kind === "failing" || s.kind === "missing") return true;
     const exp = o.managed.find((m) => m.name === r.name)?.expiresAt;
-    return exp ? daysUntil(exp, d.health.now) <= 14 : false;
+    return exp ? daysUntil(exp, d.health.now) <= EXPIRY_WARN_DAYS : false;
   });
 }
 

@@ -245,3 +245,82 @@ describe("Data refresh card on the Consumption tab", () => {
     expect(page).toContain("refreshing…");
   });
 });
+
+describe("overdue", () => {
+  const minutesAgo = (m: number) => new Date(at("12:00:00").getTime() - m * 60_000).toISOString();
+  const input = (collectAgo: number, domainAgoH = 1) => ({
+    runs: [
+      { name: "collect", at: minutesAgo(collectAgo), ok: true, summary: "ok" },
+      { name: "providers", at: minutesAgo(30), ok: true, summary: "ok" },
+    ],
+    domains: [
+      {
+        domain: "a.in",
+        expires: "2027-01-01T00:00:00.000Z",
+        error: null,
+        checkedAt: minutesAgo(domainAgoH * 60),
+      },
+    ],
+    now: at("12:00:00"),
+    cloudflare: true,
+    platforms: ["GitHub"],
+    sites: true,
+    domainCount: 1,
+  });
+
+  it("an hourly source is overdue once its last run is older than 90 minutes; a daily lookup after 30 hours", () => {
+    const by = (rows: ReturnType<typeof refreshRows>, k: string) => rows.find((r) => r.key === k);
+    expect(by(refreshRows(input(80)), "cloudflare")?.overdue).toBe(false);
+    expect(by(refreshRows(input(91)), "cloudflare")?.overdue).toBe(true);
+    expect(by(refreshRows(input(91)), "platforms")?.overdue).toBe(false); // each source on its own clock
+    expect(by(refreshRows(input(10, 29)), "domains")?.overdue).toBe(false);
+    expect(by(refreshRows(input(10, 31)), "domains")?.overdue).toBe(true);
+    expect(by(refreshRows(input(10)), "uptime")?.overdue).toBe(false); // continuous: nothing to be late
+    // Never ran: not "overdue", just not yet.
+    const none = refreshRows({ ...input(10), runs: [], domains: [], domainCount: 0 });
+    expect(none.every((r) => !r.overdue)).toBe(true);
+  });
+
+  it("the Consumption tab shows an overdue badge so a silent schedule is visible", () => {
+    const ledger: Ledger = {
+      data: {
+        generatedAt: "2026-10-18T12:00:00.000Z",
+        project: "Agency",
+        clients: [
+          {
+            id: "acme",
+            name: "Acme",
+            email: "o@acme.in",
+            status: "live",
+            platforms: ["cloudflare-workers"],
+            accounts: [],
+            monitors: [],
+            domains: [],
+          },
+        ],
+        targets: [],
+        providers: [
+          {
+            id: "cf",
+            platform: "cloudflare",
+            clientId: "acme",
+            name: "cf",
+            account: "x",
+            plan: "Free",
+            auth: "r",
+            metrics: [],
+          },
+        ],
+      },
+    };
+    const page = (collectAgo: number): PageData => ({
+      ledger,
+      health: { uptime: null, now: at("12:00:00"), domains: [] },
+      runs: [{ name: "collect", at: minutesAgo(collectAgo), ok: true, summary: "ok" }],
+      alerts: [],
+      tz: "Asia/Kolkata",
+    });
+    expect(renderConsumptionPage(page(200), "o@acme.in")).toContain("overdue");
+    expect(renderConsumptionPage(page(20), "o@acme.in")).not.toContain("overdue");
+  });
+});

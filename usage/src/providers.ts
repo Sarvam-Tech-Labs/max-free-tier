@@ -378,22 +378,47 @@ async function vercel(
   now: Date,
   _levels: readonly number[],
   f: typeof fetch,
+  info?: TokenInfo,
 ) {
   const today = now.toISOString().slice(0, 10);
+  const headers = { Authorization: `Bearer ${token}` };
   const team = await json<{ softBlock?: { reason?: string } | null }>(
     "vercel",
     `${VERCEL_API}/v2/teams/${encodeURIComponent(t.account as string)}`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers },
     f,
   );
-  if (!team.softBlock) return [];
-  return [
-    problem(
-      "vercel.blocked",
-      `account BLOCKED by Vercel (${team.softBlock.reason ?? "see the dashboard"})`,
-      today,
-    ),
-  ];
+  const out: LimitStatus[] = [];
+  // The token's own record (GET /v5/user/tokens/current) says when it expires, and whether Vercel found it leaked
+  // publicly. Best effort: a token too narrowly scoped to read it must not fail the check.
+  try {
+    const meta = await json<{
+      token?: { expiresAt?: number | string; leakedAt?: number | string };
+    }>("vercel token", `${VERCEL_API}/v5/user/tokens/current`, { headers }, f);
+    const exp = Number(meta.token?.expiresAt);
+    if (info && Number.isFinite(exp) && exp > 0) info.expiresAt = new Date(exp).toISOString();
+    if (meta.token?.leakedAt !== undefined) {
+      out.push(
+        problem(
+          "vercel.token_leaked",
+          "Vercel flagged this token as LEAKED (found exposed publicly): revoke it at vercel.com/account/tokens and paste a new one on the Tokens page",
+          today,
+        ),
+      );
+    }
+  } catch {
+    // no token metadata available: the date can still be entered by hand
+  }
+  if (team.softBlock) {
+    out.push(
+      problem(
+        "vercel.blocked",
+        `account BLOCKED by Vercel (${team.softBlock.reason ?? "see the dashboard"})`,
+        today,
+      ),
+    );
+  }
+  return out;
 }
 
 const CHECKS = { github, resend, supabase, vercel };

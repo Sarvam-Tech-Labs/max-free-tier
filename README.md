@@ -63,8 +63,9 @@ One password-protected website, two tabs, in the Sarvam Tech Labs design system:
 
 - **Tokens** — **Connect a platform** yourself, right on the site: paste a token and say which email it belongs to; the
   account is found from the token. An email has one account per platform and its projects run on them, matching how the
-  platforms actually meter usage. No registry edit, no redeploy. Tokens are verified, encrypted and never shown again, with
-  a warning before one fails or expires.
+  platforms actually meter usage. No registry edit, no redeploy. Tokens are verified, encrypted and never shown again. Token expiry is read from the platform
+  where it says (GitHub, Vercel), and Telegram tells you when a token is rejected or fails, when it works again, as it nears
+  expiry (30/14/7/3/1 days), and if the hourly checks themselves go quiet.
 
 Telegram only pushes alerts to your phone; the site is where you look.
 

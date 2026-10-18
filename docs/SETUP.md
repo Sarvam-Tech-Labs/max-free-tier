@@ -122,8 +122,19 @@ others' token names are not needed). A client with no `email:` keeps its own acc
 **Missing**; click **Add token** and paste it. The token is never shown again: the page keeps only the last four characters.
 **Replace**, **Test** and **Delete** work on it. If the registry covers an email and platform, a site connection for it is refused.
 
-Telegram warns you when a saved token fails two checks in a row (then at most once a day) or expires within 14 days.
-GitHub's expiry is read automatically; for the others enter the date you chose when creating the token.
+**Alerts (Telegram), automatic.** Every token is checked hourly against its platform, and you are told, whatever the reason:
+- the platform **rejects** it (HTTP 401/403: expired, revoked, wrong): on the first failed check, then at most daily;
+- it fails any other way (network, 5xx): after two checks in a row, so one blip is not a dead token, then at most daily;
+- it **works again**: one "✅ Working again" note;
+- it is about to **expire**: once at 30, 14, 7, 3 and 1 days left, then daily once it has expired;
+- Vercel says the token **leaked** (found exposed publicly): treated as an alert until you replace it;
+- the hourly checks themselves **stop**: each of the two hourly runs warns if the other has been silent for over 3 hours
+  (the Healthchecks.io watchdog above covers the uptime engine and Cloudflare itself). The Consumption tab's Data refresh
+  card also shows an "overdue" badge.
+
+**Expiry dates are read from the platform where it tells us:** GitHub (response header) and Vercel (its token record) are
+automatic, including when you connect the token. Supabase and Resend do not expose a token's expiry, so for those enter the
+date you chose when creating the token (Resend keys do not expire on their own; a revoked one is caught by the failure alert).
 Anyone with the site password can add, replace or delete tokens but cannot read them, so prefer read-only tokens.
 Tokens set the old way (the `PROVIDER_TOKENS` deployment secret) keep working; a pasted token of the same name wins.
 

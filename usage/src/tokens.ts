@@ -30,7 +30,20 @@ import { logAlert, saveReadings } from "./store";
 export const TOKEN_NAME = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** Alert levels used only while verifying (the numbers are discarded; only success or failure matters). */
 const VERIFY_LEVELS = [50, 80, 95];
-export const EXPIRY_WARN_DAYS = 14;
+/** Expiry is announced once at each of these remaining-days steps (30, 14, 7, 3, 1), then daily once it has passed. */
+export const EXPIRY_STEPS = [1, 3, 7, 14, 30] as const;
+/** The first warning: the Tokens page flags a token from this many days out too (the last of EXPIRY_STEPS). */
+export const EXPIRY_WARN_DAYS = 30;
+/**
+ * The step the time left (ms) falls in: -1 once expired, Infinity while it is further out than the first warning. Decided on
+ * the exact time, never on rounded days: 12 hours past is Math.ceil(-0.5) = -0 days, which must not read as "1 day left".
+ */
+const stepOf = (msLeft: number): number =>
+  msLeft < 0
+    ? -1
+    : (EXPIRY_STEPS.find((s) => Math.ceil(msLeft / DAY_MS) <= s) ?? Number.POSITIVE_INFINITY);
+/** The platform refused the credential itself (expired, revoked, wrong): waiting for a second failure only adds delay. */
+const REJECTED = /HTTP (401|403)\b/;
 /** A check must fail this many runs in a row before it alerts: one network blip is not a dead token. */
 export const FAIL_ALERT_AFTER = 2;
 const COOLDOWN_MS = 24 * 3_600_000;
@@ -456,13 +469,19 @@ export async function handleTokenApi(
 const day = (iso: string): string => iso.slice(0, 10);
 
 /**
- * Telegram alert when a saved token keeps failing (two runs in a row, then at most daily) or is about to expire (within 14
- * days, at most daily). Returns errors to report; never throws. Marks an alert as sent only if every channel got it.
+ * Telegram alert, for whatever reason a token stops working or is about to:
+ *   - the platform REJECTS it (HTTP 401/403: expired, revoked, wrong): on the first failed check, since waiting helps nobody;
+ *   - it fails some other way (network, 5xx): after two runs in a row, so one blip is not a dead token;
+ *   - either way again at most daily while it lasts;
+ *   - it expires: once at 30, 14, 7, 3 and 1 days left, then daily after it has expired;
+ *   - and, with `recovered`, a note that tokens which had been alerted about work again.
+ * Returns errors to report; never throws. Marks an alert as sent only if every channel got it.
  */
 export async function tokenAlerts(
   env: Env,
   now: Date,
   fetchImpl: typeof fetch = fetch,
+  recovered: readonly string[] = [],
 ): Promise<string[]> {
   const iso = now.toISOString();
   const due = (at: string | null): boolean =>
@@ -473,20 +492,34 @@ export async function tokenAlerts(
   try {
     const targets = new Map(safeTargets(env).map((t) => [targetKey(t), t]));
     for (const s of await loadTargetStatus(env.USAGE)) {
-      if (s.ok || s.failCount < FAIL_ALERT_AFTER || !due(s.alertedAt)) continue;
+      if (s.ok || !due(s.alertedAt)) continue;
+      const rejected = REJECTED.test(s.error ?? "");
+      if (s.failCount < (rejected ? 1 : FAIL_ALERT_AFTER)) continue;
       const t = targets.get(s.target);
       if (!t) continue; // recorded under an old key (before accounts were keyed by email): not a live check
       const who = `${t.client} · ${KIND_LABEL[t.kind]}`;
+      const error = s.error ?? "unknown error";
       lines.push(
-        `• ${s.token} (${who}) keeps failing${s.okAt ? `, last worked ${day(s.okAt)}` : ""}: ${s.error ?? "unknown error"}`,
+        rejected
+          ? `• ${s.token} (${who}) was rejected: ${error}. It has probably expired or been revoked.`
+          : `• ${s.token} (${who}) keeps failing${s.okAt ? `, last worked ${day(s.okAt)}` : ""}: ${error}`,
       );
       failing.push(s.target);
     }
     for (const m of await listTokens(env.USAGE)) {
-      if (!m.expiresAt || !due(m.expiryAlertedAt)) continue;
-      const left = Date.parse(m.expiresAt) - now.getTime();
+      if (!m.expiresAt) continue;
+      const expires = Date.parse(m.expiresAt);
+      const left = expires - now.getTime();
       const days = Math.ceil(left / DAY_MS);
-      if (days > EXPIRY_WARN_DAYS) continue;
+      const step = stepOf(left);
+      if (step === Number.POSITIVE_INFINITY) continue;
+      // Announce when this step has not been announced yet; an expired token is repeated daily.
+      const before =
+        m.expiryAlertedAt === null
+          ? Number.POSITIVE_INFINITY
+          : stepOf(expires - Date.parse(m.expiryAlertedAt));
+      if (!(m.expiryAlertedAt === null || step < before || (left < 0 && due(m.expiryAlertedAt))))
+        continue;
       lines.push(
         left < 0 // not `days < 0`: 12 hours past is Math.ceil(-0.5) = -0, which would read "expires in 0 days"
           ? `• ${m.name} expired on ${day(m.expiresAt)}`
@@ -494,8 +527,14 @@ export async function tokenAlerts(
       );
       expiring.push(m.name);
     }
-    if (lines.length === 0) return [];
-    const text = `🔑 Token needs attention\n${lines.join("\n")}\nReplace it on the site's Tokens page.`;
+    if (lines.length === 0 && recovered.length === 0) return [];
+    const parts: string[] = [];
+    if (lines.length > 0)
+      parts.push(
+        `🔑 Token needs attention\n${lines.join("\n")}\nReplace it on the site's Tokens page.`,
+      );
+    if (recovered.length > 0) parts.push(`✅ Working again\n${recovered.join("\n")}`);
+    const text = parts.join("\n\n");
     const results = await notify(env, text, fetchImpl);
     const delivered = results.length > 0 && results.every((r) => r.ok);
     await logAlert(

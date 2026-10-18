@@ -39,11 +39,14 @@ import {
 } from "./store";
 import {
   loadManagedTokens,
+  loadTargetStatus,
   saveTargetStatus,
   setReportedExpiry,
+  type TargetStatusRow,
   targetKey,
   tokenAlerts,
 } from "./tokens";
+import { alertIfStale } from "./watchdog";
 
 export const HISTORY_DAYS = 7;
 
@@ -121,6 +124,14 @@ export async function runCollect(
 ): Promise<RunSummary> {
   const today = isoDate(now);
   const summary: RunSummary = { date: today, written: 0, spikes: 0, notified: 0 };
+  // The platform check runs half an hour after this one: if it has gone quiet, say so (whatever else this run does).
+  const errors: string[] = await alertIfStale(
+    env,
+    now,
+    fetchImpl,
+    "providers",
+    "platform check (GitHub, Vercel, Resend, Supabase)",
+  );
   const accounts = parseAccounts(env.CF_ACCOUNT_ID);
   if (!env.CF_API_TOKEN || accounts.length === 0) {
     // Recorded, so the site shows the misconfiguration instead of "not run yet".
@@ -128,11 +139,10 @@ export async function runCollect(
       env,
       "collect",
       summary,
-      ["CF_API_TOKEN / CF_ACCOUNT_ID not set"],
+      ["CF_API_TOKEN / CF_ACCOUNT_ID not set", ...errors],
       now.toISOString(),
     );
   }
-  const errors: string[] = [];
   let labels: Record<string, string> = {};
   try {
     labels = parseLabels(env.ACCOUNT_LABELS_JSON);
@@ -273,6 +283,15 @@ export async function runProviders(
   }
 
   const collectedAt = now.toISOString();
+  errors.push(...(await alertIfStale(env, now, fetchImpl, "collect", "Cloudflare usage check")));
+  // A token that was failing and had been alerted about: if it works now, say so once.
+  const before = new Map<string, TargetStatusRow>();
+  try {
+    for (const s of await loadTargetStatus(env.USAGE)) before.set(s.target, s);
+  } catch {
+    // no table yet: nothing to recover from
+  }
+  const recovered: string[] = [];
   const sections: Array<ReportSection & { key: string }> = [];
   for (const t of targets) {
     const label = `${t.client} · ${KIND_LABEL[t.kind]}`;
@@ -283,6 +302,9 @@ export async function runProviders(
       const crossed = statuses.filter((s) => s.level !== null).length;
       if (crossed > 0) summary.limitAlerts = (summary.limitAlerts ?? 0) + crossed;
       await saveReadings(env.USAGE, key, statuses, collectedAt); // for the site
+      const prev = before.get(key);
+      if (prev && !prev.ok && prev.alertedAt !== null)
+        recovered.push(`• ${t.token} (${label}) is working again`);
       await saveTargetStatus(env.USAGE, key, t.token, true, null, collectedAt);
       if (info.expiresAt) await setReportedExpiry(env.USAGE, t.token, info.expiresAt);
       const fresh = await filterUnnotifiedLimits(env.USAGE, key, statuses);
@@ -298,7 +320,7 @@ export async function runProviders(
       }
     }
   }
-  errors.push(...(await tokenAlerts(env, now, fetchImpl)));
+  errors.push(...(await tokenAlerts(env, now, fetchImpl, recovered)));
 
   if (sections.length > 0) {
     try {
